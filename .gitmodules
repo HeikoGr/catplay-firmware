@@ -1,0 +1,27 @@
+[submodule "bitbake"]
+	path = bitbake
+	url = https://github.com/openembedded/bitbake.git
+	branch = yocto-5.0.18
+[submodule "openembedded-core"]
+	path = openembedded-core
+	url = https://github.com/openembedded/openembedded-core.git
+	branch = scarthgap
+[submodule "meta-clang"]
+	path = meta-clang
+	url = https://github.com/kraj/meta-clang.git
+	branch = scarthgap
+[submodule "meta-openembedded"]
+	path = meta-openembedded
+	url = https://github.com/openembedded/meta-openembedded.git
+	branch = scarthgap
+[submodule "meta-freescale"]
+	path = meta-freescale
+	url = https://github.com/Freescale/meta-freescale.git
+	branch = scarthgap
+[submodule "meta-rust"]
+	path = meta-rust
+	url = https://github.com/meta-rust/meta-rust.git
+[submodule "meta-lts-mixins-rust"]
+	path = meta-lts-mixins-rust
+	url = https://git.yoctoproject.org/git/meta-lts-mixins
+	branch = scarthgap/rust
