@@ -1,0 +1,1932 @@
+diff --git a/.dockerignore b/.dockerignore
+new file mode 100644
+index 00000000000..223aee12872
+--- /dev/null
++++ b/.dockerignore
+@@ -0,0 +1 @@
++/mips32el-*
+\ No newline at end of file
+diff --git a/.gitignore b/.gitignore
+index 4df188509fa..5c4f38c0eff 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -5,7 +5,6 @@
+ #
+ # Normal rules
+ #
+-
+ *.rej
+ *.orig
+ *.a
+diff --git a/Dockerfile b/Dockerfile
+new file mode 100644
+index 00000000000..9060073606c
+--- /dev/null
++++ b/Dockerfile
+@@ -0,0 +1,10 @@
++FROM debian:stable
++
++ARG TOOLCHAIN_VERSION=stable-2025.08-1
++
++RUN apt-get update && apt-get install wget build-essential -y && apt-get clean
++RUN cd /opt && wget https://toolchains.bootlin.com/downloads/releases/toolchains/mips32el/tarballs/mips32el--musl--${TOOLCHAIN_VERSION}.tar.xz && \
++    tar xvf *.tar.xz && rm -rf *.tar.xz
++
++
++ENV PATH="/opt/mips32el--musl--${TOOLCHAIN_VERSION}/bin:${PATH}"
+diff --git a/Makefile b/Makefile
+index 720dae8919e..5a2436d897a 100644
+--- a/Makefile
++++ b/Makefile
+@@ -531,6 +531,8 @@ $(obj)u-boot-with-spl.bin: $(obj)spl/u-boot-spl.bin $(obj)u-boot.bin
+ 		$(OBJCOPY) ${OBJCFLAGS} --pad-to=$(CONFIG_SPL_PAD_TO) \
+ 			-I binary -O binary $< $(obj)spl/u-boot-spl-pad.bin
+ 		cat $(obj)spl/u-boot-spl-pad.bin $(obj)u-boot.bin > $@
++		# Create a variant that can be used with the cloner tool as spl.bin
++		dd if=$(obj)spl/u-boot-spl.bin of=$(obj)spl/u-boot-spl.run.bin bs=2048 skip=1
+ 		#rm $(obj)spl/u-boot-spl-pad.bin
+ 
+ $(obj)u-boot-with-spl.imx: $(obj)spl/u-boot-spl.bin $(obj)u-boot.bin
+diff --git a/arch/mips/config.mk b/arch/mips/config.mk
+index 1f2726841b2..23d6773cdd3 100644
+--- a/arch/mips/config.mk
++++ b/arch/mips/config.mk
+@@ -21,7 +21,7 @@
+ # MA 02111-1307 USA
+ #
+ 
+-CROSS_COMPILE ?= mips-linux-gnu-
++CROSS_COMPILE ?=  mipsel-buildroot-linux-musl-
+ 
+ # Handle special prefix in ELDK 4.0 toolchain
+ ifneq (,$(findstring 4KCle,$(CROSS_COMPILE)))
+diff --git a/arch/mips/cpu/xburst/traps.c b/arch/mips/cpu/xburst/traps.c
+index 7718ffeca8c..8ca9913fd33 100644
+--- a/arch/mips/cpu/xburst/traps.c
++++ b/arch/mips/cpu/xburst/traps.c
+@@ -70,6 +70,12 @@ void __attribute__ ((noreturn)) print_exp(void)
+ {
+ 	printf("\nEXCEPTION:%s\n",get_exception((read_c0_cause() & 0x7c)>>2));
+ 	dump_task();
++
++
++	#ifdef CONFIG_SPL_BUILD
++		spl_board_unbrick(); // CONFIG_C2A_AGGRESSIVE_UNBRICK
++	#endif
++
+ 	while(1)
+ 		__asm__ __volatile__("wait\n\t");
+ }
+diff --git a/arch/mips/cpu/xburst/x1600/Makefile b/arch/mips/cpu/xburst/x1600/Makefile
+index 89b46b5a76a..037cb20f61a 100644
+--- a/arch/mips/cpu/xburst/x1600/Makefile
++++ b/arch/mips/cpu/xburst/x1600/Makefile
+@@ -64,7 +64,8 @@ $(OBJTREE)/include/generated/pll_reg_values.h:$(OBJTREE)/$(dir)/pll_params_creat
+ 	$< > $@
+ 
+ $(OBJTREE)/$(dir)/pll_params_creator.exe:$(SRCTREE)/$(dir)/pll_params_creator.c | $(SRCTREE)/include/configs/$(BOARD).h
+-	$(HOSTCC) $(HOSTCFLAGS_NOPED) $(HOSTLDFLAGS) $(HOSTCPPFLAGS) -o $@ $^
++	$(HOSTCC) $(HOSTCFLAGS_NOPED) $(HOSTLDFLAGS) $(HOSTCPPFLAGS) -o $@.tmp.$$PPID $^
++	mv -f $@.tmp.$$PPID $@
+ 
+ $(obj).depend.clk:$(OBJTREE)/include/generated/clk_reg_values.h
+ $(obj)clk.o:$(OBJTREE)/include/generated/clk_reg_values.h
+@@ -73,7 +74,8 @@ $(OBJTREE)/include/generated/clk_reg_values.h:$(OBJTREE)/$(dir)/clk_params_creat
+ 	$< > $@
+ 
+ $(OBJTREE)/$(dir)/clk_params_creator.exe:$(SRCTREE)/$(dir)/clk_params_creator.c | $(SRCTREE)/include/configs/$(BOARD).h
+-	$(HOSTCC) $(HOSTCFLAGS_NOPED) $(HOSTLDFLAGS) $(HOSTCPPFLAGS) -o $@ $^
++	$(HOSTCC) $(HOSTCFLAGS_NOPED) $(HOSTLDFLAGS) $(HOSTCPPFLAGS) -o $@.tmp.$$PPID $^
++	mv -f $@.tmp.$$PPID $@
+ endif
+ #########################################################################
+ 
+diff --git a/arch/mips/cpu/xburst/x1600/pllsetting.c b/arch/mips/cpu/xburst/x1600/pllsetting.c
+index d9bb9a0dfa9..73e423b1a77 100644
+--- a/arch/mips/cpu/xburst/x1600/pllsetting.c
++++ b/arch/mips/cpu/xburst/x1600/pllsetting.c
+@@ -22,21 +22,21 @@ static void pll_set(unsigned int reg)
+ 		val = (APLL_EN_VALUE << 0)  | (APLL_M_VALUE << 20) | (APLL_N_VALUE << 14) |
+ 			(APLL_OD1_VALUE << 11) | (APLL_OD0_VALUE << 8) | (1 << 7) | (1 << 6);
+ printf("calculated CPM_CPAPCR:%x\n",val);
+-val=0x02e049cd;
++// val=0x02e049cd;
+ 		cpm_outl(val,CPM_CPAPCR);
+ 		break;
+ 	case CPM_CPMPCR:
+ 		val = (MPLL_EN_VALUE << 0)  | (MPLL_M_VALUE << 20) | (MPLL_N_VALUE << 14) |
+ 			(MPLL_OD1_VALUE << 11) | (MPLL_OD0_VALUE << 8) | (1 << 7) | (1 << 6);
+ printf("calculated CPM_CPMPCR:%x\n",val);
+-val=0x0af0c9cd;
++// val=0x0af0c9cd;
+ 		cpm_outl(val,CPM_CPMPCR);
+ 		break;
+ 	case CPM_CPEPCR:
+ 		val = (EPLL_EN_VALUE << 0)  | (EPLL_M_VALUE << 20) | (EPLL_N_VALUE << 14) |
+ 			(EPLL_OD1_VALUE << 11) | (EPLL_OD0_VALUE << 8) | (1 << 7) | (1 << 6);
+ printf("calculated CPM_CPEPCR:%x\n",val);
+-val=0x019059cd;
++// val=0x019059cd;
+ 		cpm_outl(val,CPM_CPEPCR);
+ 		break;
+ 	default:
+diff --git a/arch/mips/cpu/xburst/x1600/soc.c b/arch/mips/cpu/xburst/x1600/soc.c
+index ca9227f221e..853565c743b 100644
+--- a/arch/mips/cpu/xburst/x1600/soc.c
++++ b/arch/mips/cpu/xburst/x1600/soc.c
+@@ -51,6 +51,7 @@ struct global_info ginfo __attribute__ ((section(".data"))) = {
+ extern void pll_init(void);
+ extern void sdram_init(void);
+ extern void validate_cache(void);
++extern int traps_init(void);
+ 
+ #ifdef CONFIG_SIMULATION
+ volatile noinline void hello_word(void)
+@@ -81,8 +82,10 @@ void board_init_f(ulong dummy)
+ 
+ 	gpio_init();
+ 
++#ifndef CONFIG_HW_WATCHDOG
+ 	*(volatile unsigned int *)0xb000202c |= 1 << 16; // wdt disable.
+ 	*(volatile unsigned int *)0xb0002004 &= ~(1 << 0); // wdt disable.
++#endif
+ 
+ #ifndef CONFIG_FPGA
+ 	/* Init uart first */
+@@ -118,6 +121,16 @@ void board_init_f(ulong dummy)
+ 	sdram_init();
+ 	debug("SDRAM init ok\n");
+ 
++#ifdef CONFIG_XBURST_TRAPS
++	debug("TRAPS init\n");
++	traps_init();
++#endif
++
++#ifdef CONFIG_HW_WATCHDOG
++	debug("WATCHDOG init\n");
++	hw_watchdog_init();
++#endif
++
+ #ifdef CONFIG_SIMULATION
+ 	{
+ 		hello_word();
+@@ -130,7 +143,7 @@ void board_init_f(ulong dummy)
+ 	/* Release otg soft reset. */
+ 	release_soft_reset();
+ 
+-#ifndef CONFIG_BURNER
++#if (!defined(CONFIG_BURNER) && !defined(CONFIG_C2A_BURNER)) || defined(CONFIG_C2A_SPL_STAGING)
+ 	/* Clear the BSS */
+ 	memset(__bss_start, 0, (char *)&__bss_end - __bss_start);
+ #ifdef CONFIG_PALLADIUM
+diff --git a/arch/mips/cpu/xburst/x1600/start.S b/arch/mips/cpu/xburst/x1600/start.S
+index aae5b10ea92..9bfe1806c07 100644
+--- a/arch/mips/cpu/xburst/x1600/start.S
++++ b/arch/mips/cpu/xburst/x1600/start.S
+@@ -26,6 +26,7 @@
+ #include <asm/addrspace.h>
+ #include <asm/cacheops.h>
+ #include <asm/arch/base.h>
++#include "../traps.h"
+ 
+ #define RESERVED_FOR_SC(x) .space 1536, x
+ 
+@@ -80,7 +81,7 @@
+ 	.globl _start
+ 	.text
+ _start:
+-#ifndef CONFIG_BURNER
++#if !defined(CONFIG_BURNER) && !defined(CONFIG_C2A_BURNER)
+ 	SETUP_SPL_MMC_HEADER()
+ 	SETUP_SPL_SFC_NOR_HEADER()
+ 	SETUP_SPL_SFC_NAND_HEADER()
+@@ -183,3 +184,69 @@ cache_alloc_a_line:
+ #endif
+ 	j	board_init_f
+ 	nop
++
++#ifdef CONFIG_XBURST_TRAPS
++	.macro  SAVE_ALL
++	.set noat
++	.set noreorder
++	sw ra,PT_RA(sp)
++	sw fp,PT_FP(sp)
++	sw t9,PT_T9(sp)
++	sw t8,PT_T8(sp)
++	sw s7,PT_S7(sp)
++	sw s6,PT_S6(sp)
++	sw s5,PT_S5(sp)
++	sw s4,PT_S4(sp)
++	sw s3,PT_S3(sp)
++	sw s2,PT_S2(sp)
++	sw s1,PT_S1(sp)
++	sw s0,PT_S0(sp)
++	sw t7,PT_T7(sp)
++	sw t6,PT_T6(sp)
++	sw t5,PT_T5(sp)
++	sw t4,PT_T4(sp)
++	sw t3,PT_T3(sp)
++	sw t2,PT_T2(sp)
++	sw t1,PT_T1(sp)
++	sw t0,PT_T0(sp)
++	sw a3,PT_A3(sp)
++	sw a2,PT_A2(sp)
++	sw a1,PT_A1(sp)
++	sw a0,PT_A0(sp)
++	sw v1,PT_V1(sp)
++	sw v0,PT_V0(sp)
++	sw AT,PT_AT(sp)
++	mfc0 k1,CP0_STATUS
++	sw k1,PT_STATUS(sp)
++	mfc0 k1, CP0_EPC
++	sw k1,PT_EPC(sp)
++	mflo k1
++	sw k1,PT_LO(sp)
++	mfhi k1
++	sw k1,PT_HI(sp)
++	nop
++	la t1,0x80000004
++	sw sp,0(t1)
++	.endm
++
++#define	NESTED(symbol, framesize, rpc)                  \
++		.globl	symbol;                         \
++		.align	2;                              \
++		.type	symbol, @function;              \
++		.ent	symbol, 0;                       \
++symbol:		.frame	sp, framesize, rpc
++
++#define	END(function)                                   \
++		.end	function;		        \
++		.size	function, .-function
++
++NESTED(handle_exception, 0, sp)
++	addi sp,sp,-PT_LEN
++	SAVE_ALL
++	la	t9,0x80000000
++	lw	t9,0(t9)
++	jr	t9
++	nop
++	nop
++END(handle_exception)
++#endif
+diff --git a/arch/mips/include/asm/arch-x1600/tcu.h b/arch/mips/include/asm/arch-x1600/tcu.h
+new file mode 100644
+index 00000000000..e1f1cb826a2
+--- /dev/null
++++ b/arch/mips/include/asm/arch-x1600/tcu.h
+@@ -0,0 +1,25 @@
++/*
++ * X1600 TCU definitions (minimal set for watchdog)
++ *
++ * Copyright (c) 2013 Ingenic Semiconductor Co.,Ltd
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License as
++ * published by the Free Software Foundation; either version 2 of
++ * the License, or (at your option) any later version.
++ */
++
++#ifndef __TCU_H__
++#define __TCU_H__
++
++#include <asm/arch/base.h>
++
++/* TCU clock stop/set registers */
++#define TCU_TSSR		(TCU_BASE + 0x2C)
++#define TCU_TSCR		(TCU_BASE + 0x3C)
++
++/* Watchdog gate control bits in TCU stop/set registers */
++#define TCU_TSSR_WDTSS		(1 << 16)
++#define TCU_TSCR_WDTSC		(1 << 16)
++
++#endif /* __TCU_H__ */
+diff --git a/board/ingenic/ax1800/Makefile b/board/ingenic/ax1800/Makefile
+new file mode 100644
+index 00000000000..1cc0cad807a
+--- /dev/null
++++ b/board/ingenic/ax1800/Makefile
+@@ -0,0 +1,46 @@
++#
++# Copyright (c) 2015 Ingenic Semiconductor Co.,Ltd
++# Author: Matthew <xu.guo@ingenic.com>
++# Based on: board/reliableIPTV/urboard/Makefile
++#           Written by Paul Burton <paul.burton@imgtec.com>
++#
++# This program is free software; you can redistribute it and/or
++# modify it under the terms of the GNU General Public License as
++# published by the Free Software Foundation; either version 2 of
++# the License, or (at your option) any later version.
++#
++# This program is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++# GNU General Public License for more details.
++#
++# You should have received a copy of the GNU General Public License
++# along with this program; if not, write to the Free Software
++# Foundation, Inc., 59 Temple Place, Suite 330, Boston,
++# MA 02111-1307 USA
++#
++
++include $(TOPDIR)/config.mk
++
++LIB	= $(obj)lib$(BOARD).o
++
++COBJS-y	:= board.o
++# COBJS-$(CONFIG_VIDEO_BM347WV_F_8991FTGF) += lcd-8991.o
++# COBJS-$(CONFIG_VIDEO_TRULY_TFT240240_2_E) += lcd-truly-tft240240.o
++# COBJS-$(CONFIG_VIDEO_BYD_BM8766U) += lcd-bydbm8766u.o
++
++SRCS	:= $(SOBJS-y:.o=.S) $(COBJS-y:.o=.c)
++OBJS	:= $(addprefix $(obj),$(COBJS-y))
++SOBJS   := $(addprefix $(obj),$(SOBJS-y))
++
++$(LIB):	$(obj).depend $(OBJS) $(SOBJS)
++	$(call cmd_link_o_target, $(OBJS))
++
++#########################################################################
++
++# defines $(obj).depend target
++include $(SRCTREE)/rules.mk
++
++sinclude $(obj).depend
++
++#########################################################################
+diff --git a/board/ingenic/ax1800/board.c b/board/ingenic/ax1800/board.c
+new file mode 100644
+index 00000000000..3a6ea07efa5
+--- /dev/null
++++ b/board/ingenic/ax1800/board.c
+@@ -0,0 +1,124 @@
++/*
++ * Copyright (c) 2013 Ingenic Semiconductor Co.,Ltd
++ * Author: Matthew <xu.guo@ingenic.com>
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License as
++ * published by the Free Software Foundation; either version 2 of
++ * the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston,
++ * MA 02111-1307 USA
++ */
++
++#include <common.h>
++#include <nand.h>
++#include <net.h>
++#include <netdev.h>
++#include <asm/gpio.h>
++#include <asm/arch/cpm.h>
++#include <asm/arch/nand.h>
++#include <asm/arch/mmc.h>
++#include <asm/arch/clk.h>
++#include <asm/arch/wdt.h>
++
++int board_early_init_f(void)
++{
++	return 0;
++}
++
++int board_early_init_r(void)
++{
++	return 0;
++}
++
++#ifdef CONFIG_USB_GADGET
++int jz_udc_probe(void);
++void board_usb_init(void)
++{
++	printf("USB_udc_probe\n");
++	jz_udc_probe();
++}
++#endif /* CONFIG_USB_GADGET */
++
++int misc_init_r(void)
++{
++	return 0;
++}
++
++#ifdef CONFIG_MMC
++int board_mmc_init(bd_t *bd)
++{
++	jz_mmc_init();
++	return 0;
++}
++#endif
++
++int board_eth_init(bd_t *bis)
++{
++	return 0;
++}
++
++#ifdef CONFIG_SYS_NAND_SELF_INIT
++void board_nand_init(void)
++{
++	return 0;
++}
++#endif
++
++/* U-Boot common routines */
++int checkboard(void)
++{
++	puts("Board: AX1800M (Ingenic XBurst X1600EN SoC)\n");
++	return 0;
++}
++
++#ifdef CONFIG_SPL_NOR_SUPPORT
++int spl_start_uboot(void)
++{
++	return 1;
++}
++#endif
++
++#ifdef CONFIG_SPL_BUILD
++
++void spl_board_init(void)
++{
++}
++
++#endif /* CONFIG_SPL_BUILD */
++
++#include <asm/errno.h>
++#include <asm/io.h>
++#include <asm/arch/cpm.h>
++
++void spl_board_unbrick(void) {
++	#ifdef CONFIG_C2A_AGGRESSIVE_UNBRICK
++		#define SLPC_SW_MAGIC           0x425753 // SWB (software boot)
++		#define SLPC_SW_USB_BOOT        (0x2 << 0)
++
++		printf("Attempting unbrick...rebooting to Ingenic USB loader\n");
++		unsigned int val = SLPC_SW_MAGIC << 8 | SLPC_SW_USB_BOOT;
++		unsigned int wdt_ticks = RTC_FREQ / WDT_DIV * RESET_DELAY_MS / 1000;
++
++		if (wdt_ticks > 65535)
++			wdt_ticks = 65535;
++
++		cpm_outl(val, CPM_SLPC);
++		writel(TSCR_WDTSC, TCU_BASE + TCU_TSCR);
++		writel(0, WDT_BASE + WDT_TCNT);
++		writel(wdt_ticks, WDT_BASE + WDT_TDR);
++		writel(TCSR_PRESCALE | TCSR_RTC_EN | TCSR_CLRZ, WDT_BASE + WDT_TCSR);
++		writel(0, WDT_BASE + WDT_TCER);
++		writel(TCER_TCEN, WDT_BASE + WDT_TCER);
++
++		for (;;) {}
++	#endif
++}
+diff --git a/board/ingenic/ax1800/config.mk b/board/ingenic/ax1800/config.mk
+new file mode 100644
+index 00000000000..491c1b520ca
+--- /dev/null
++++ b/board/ingenic/ax1800/config.mk
+@@ -0,0 +1,29 @@
++#
++# Copyright (c) 2013 Ingenic Semiconductor Co.,Ltd
++# Author: Zoro <ykli@ingenic.cn>
++# Based on: board/reliableIPTV/urboard/config.mk
++#           Written by Paul Burton <paul.burton@imgtec.com>
++#
++# This program is free software; you can redistribute it and/or
++# modify it under the terms of the GNU General Public License as
++# published by the Free Software Foundation; either version 2 of
++# the License, or (at your option) any later version.
++#
++# This program is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++# GNU General Public License for more details.
++#
++# You should have received a copy of the GNU General Public License
++# along with this program; if not, write to the Free Software
++# Foundation, Inc., 59 Temple Place, Suite 330, Boston,
++# MA 02111-1307 USA
++#
++
++ifndef TEXT_BASE
++# ROM version
++# TEXT_BASE = 0x88000000
++
++# RAM version
++TEXT_BASE = 0x80100000
++endif
+diff --git a/board/ingenic/ax1800/partitions.tab b/board/ingenic/ax1800/partitions.tab
+new file mode 100644
+index 00000000000..a61514961b8
+--- /dev/null
++++ b/board/ingenic/ax1800/partitions.tab
+@@ -0,0 +1,18 @@
++property:
++    disk_size = 4096m
++    gpt_header_lba = 512
++    custom_signature = 0
++
++partition:
++	#name     =  start,   size, fstype
++	xboot     =     0m,     3m,
++	boot      =     3m,     8m, EMPTY
++	recovery  =    12m,    16m, EMPTY
++        pretest   =    28m,    16m, EMPTY
++        reserved  =    44m,    52m, EMPTY
++	misc      =    96m,     4m, EMPTY
++	cache     =   100m,   100m, LINUX_FS
++	system    =   200m,   1800m, LINUX_FS
++	data      =   2000m,  2048m, LINUX_FS
++
++#fstype could be: LINUX_FS, FAT_FS, EMPTY
+diff --git a/boards.cfg b/boards.cfg
+index 375c0deae0c..9f71e82682f 100644
+--- a/boards.cfg
++++ b/boards.cfg
+@@ -1446,3 +1446,7 @@ burner_t31                   mips        xburst      burner_t31          ingenic
+ 
+ # Target                     ARCH        CPU         Board name          Vendor	        SoC         Options
+ ########################################################################################################################
++#ax1800_spi_nand		mips     xburst      	ax1800	ingenic		x1600		ax1800:SPL_MMC_SUPPORT,ENV_IS_IN_MMC,GPT_CREATOR,JZ_MMC_MSC0,SPL_PARAMS_FIXER
++ax1800_spi_nor		mips     xburst      	ax1800	ingenic		x1600		ax1800:SPL_SFC_NOR,ENV_IS_NOWHERE,MTD_SFCNOR,SPL_OS_BOOT,SPL_PARAMS_FIXER,C2A_AGGRESSIVE_UNBRICK
++ax1800_spi_nor_burner		mips     xburst      	ax1800	ingenic		x1600		ax1800:ENV_IS_NOWHERE,C2A_BURNER,C2A_DEBUG
++ax1800_spi_nor_stg		mips     xburst      	ax1800	ingenic		x1600		ax1800:ENV_IS_NOWHERE,C2A_BURNER,C2A_SPL_STAGING,SPL_SFC_NOR,MTD_SFCNOR,SPL_OS_BOOT,C2A_DEBUG,C2A_AGGRESSIVE_UNBRICK
+diff --git a/build.sh b/build.sh
+new file mode 100644
+index 00000000000..3259006bf97
+--- /dev/null
++++ b/build.sh
+@@ -0,0 +1,5 @@
++docker build -t letux .
++docker run -it \
++    -v $PWD:/work \
++    -w /work \
++    letux sh -c "make distclean; make -j1 ax1800_spi_nor_stg"
+diff --git a/common/Makefile b/common/Makefile
+index a43290faf9b..36b72c5cc82 100644
+--- a/common/Makefile
++++ b/common/Makefile
+@@ -42,7 +42,7 @@ COBJS-$(CONFIG_SYS_GENERIC_BOARD) += board_r.o
+ 
+ # core command
+ COBJS-y += cmd_boot.o
+-COBJS-y += cmd_boota.o
++#COBJS-y += cmd_boota.o
+ COBJS-$(CONFIG_BOOT_XIMAGE) += cmd_bootx.o
+ COBJS-$(CONFIG_BOOT_ANDROID) += boot_mode.o
+ COBJS-$(CONFIG_CMD_FASTBOOT) += cmd_fastboot.o
+diff --git a/common/spl/spl.c b/common/spl/spl.c
+index 0b198ba4c2c..b5ccf684a4f 100644
+--- a/common/spl/spl.c
++++ b/common/spl/spl.c
+@@ -86,6 +86,11 @@ __weak char* spl_board_process_bootargs(char *arg)
+ 
+ extern char* spl_board_process_mem_bootargs(char *arg);
+ 
++__weak void spl_board_unbrick(void)
++{
++	/* Nothing to do! */
++}
++
+ void spl_parse_image_header(const struct image_header *header)
+ {
+ 	u32 header_size = sizeof(struct image_header);
+@@ -116,6 +121,8 @@ void spl_parse_image_header(const struct image_header *header)
+ 		/* Signature not found - assume u-boot.bin */
+ 		debug("mkimage signature not found - ih_magic = %x\n",
+ 			header->ih_magic);
++		spl_board_unbrick(); // CONFIG_C2A_AGGRESSIVE_UNBRICK
++
+ 		/* Let's assume U-Boot will not be more than 200 KB */
+ 		spl_image.size = CONFIG_SYS_MONITOR_LEN;
+ 		spl_image.entry_point = CONFIG_SYS_UBOOT_START;
+@@ -308,7 +315,7 @@ void preloader_console_init(void)
+ 
+ 	gd->have_console = 1;
+ 
+-	puts("\nU-Boot SPL " PLAIN_VERSION " (" U_BOOT_DATE " - " \
++	puts("\nU-Boot SPL (C2A) " PLAIN_VERSION " (" U_BOOT_DATE " - " \
+ 			U_BOOT_TIME ")\n");
+ #ifdef CONFIG_SPL_DISPLAY_PRINT
+ 	spl_display_print();
+diff --git a/common/spl/spl_sfc_nor_v2.c b/common/spl/spl_sfc_nor_v2.c
+index 14c7478852e..25ebfa0544c 100644
+--- a/common/spl/spl_sfc_nor_v2.c
++++ b/common/spl/spl_sfc_nor_v2.c
+@@ -570,6 +570,14 @@ void spl_load_kernel(long offset)
+ void sfc_init(void)
+ {
+ 	struct mini_spi_nor_info *spi_nor_info;
++	int valid_nor_params = 1;
++	int allow_staging_forced_ops = 0;
++#ifdef CONFIG_C2A_SPL_BURNED_PARAMS
++	struct {
++		unsigned int magic;
++		unsigned int version;
++	} burner_header;
++#endif
+ #ifdef CONFIG_SFC_NOR_INIT_RATE
+ 	clk_set_rate(SFC, CONFIG_SFC_NOR_INIT_RATE);
+ #else
+@@ -595,31 +603,68 @@ void sfc_init(void)
+ 	set_flash_timing();
+ 	sfc_threshold(flash->sfc);
+ 
+-	/* get nor flash params */
+-	sfc_nor_read_params(CONFIG_SPIFLASH_PART_OFFSET + sizeof(struct burner_params), (unsigned char *)&flash->g_nor_info, sizeof(struct mini_spi_nor_info));
+-	sfc_debug("%s %x\n", flash->g_nor_info.name, flash->g_nor_info.id);
++#ifdef CONFIG_C2A_SPL_BURNED_PARAMS
++	/*
++	 * In staging boot flow the burner parameter area may be absent.
++	 * Avoid programming CDT from invalid params and keep safe default read.
++	 */
++	sfc_nor_read_params(CONFIG_SPIFLASH_PART_OFFSET, (unsigned char *)&burner_header,
++			    sizeof(burner_header));
++	if ((burner_header.magic != NOR_MAGIC) ||
++	    (burner_header.version != NOR_VERSION)) {
++		valid_nor_params = 0;
++		printf("sfc: invalid nor params (magic=0x%x ver=0x%x), use default read\n",
++		       burner_header.magic, burner_header.version);
++	}
++#endif
+ 
+-	/* update to private CDT table */
+-	create_cdt_table(flash, UPDATE_CDT);
++	/* get nor flash params */
++	if (valid_nor_params) {
++		sfc_nor_read_params(CONFIG_SPIFLASH_PART_OFFSET + sizeof(struct burner_params),
++				    (unsigned char *)&flash->g_nor_info,
++				    sizeof(struct mini_spi_nor_info));
++		sfc_debug("%s %x\n", flash->g_nor_info.name, flash->g_nor_info.id);
++
++		/* update to private CDT table */
++		create_cdt_table(flash, UPDATE_CDT);
++	} else {
++		memset(&flash->g_nor_info, 0, sizeof(flash->g_nor_info));
++	}
+ 
+ 	spi_nor_info = &flash->g_nor_info;
+ 
++#ifdef CONFIG_C2A_SPL_BURNED_PARAMS
++	/*
++	 * Staging boot must not depend on flash-stored op-mode parameters,
++	 * but only when NOR params are valid (CDT was updated).
++	 */
++	if (valid_nor_params) {
++		allow_staging_forced_ops = 1;
++		spi_nor_info->quad_ops_mode = CONFIG_C2A_SPL_QUAD_OPS_MODE;
++		spi_nor_info->addr_ops_mode = CONFIG_C2A_SPL_ADDR_OPS_MODE;
++		spi_nor_info->chip_size = CONFIG_C2A_SPL_CHIP_SIZE;
++	}
++#endif
++
+ 	flash->cur_r_cmd = NOR_READ_STANDARD;
+ 
+ #ifdef CONFIG_SFC_QUAD
+-	switch (spi_nor_info->quad_ops_mode) {
+-		case 0:
+-			set_quad_mode_cmd();
+-			break;
+-		case 1:
+-			set_quad_mode_reg();
+-			break;
+-		default:
+-			break;
++	if (valid_nor_params || allow_staging_forced_ops) {
++		switch (spi_nor_info->quad_ops_mode) {
++			case 0:
++				set_quad_mode_cmd();
++				break;
++			case 1:
++				set_quad_mode_reg();
++				break;
++			default:
++				break;
++		}
+ 	}
+ #endif
+ 
+-	if (spi_nor_info->chip_size > 0x1000000) {
++	if ((valid_nor_params || allow_staging_forced_ops) &&
++	    spi_nor_info->chip_size > 0x1000000) {
+ 		switch (spi_nor_info->addr_ops_mode) {
+ 			case 0:
+ 				enter_4byte();
+@@ -844,15 +889,19 @@ void *spl_rtos_get_spl_image_info(void)
+ #ifdef CONFIG_SPL_OS_BOOT
+ void spl_sfc_nor_os_load(void)
+ {
+-	struct norflash_partitions partition;
+ 	unsigned int bootimg_addr = 0;
+ 
++#ifndef CONFIG_C2A_SPL_BURNED_PARAMS
++	struct norflash_partitions partition;
+ 	sfc_read_data(CONFIG_SPIFLASH_PART_OFFSET + sizeof(struct spi_nor_info) + sizeof(int) * 2, sizeof(struct norflash_partitions), (unsigned char*)&partition);
+ 	bootimg_addr = get_part_offset_by_name(partition, CONFIG_SPL_OS_NAME);
+-	if (bootimg_addr == -1){
++	if (bootimg_addr == -1) {
+ 		printf("kernel not found: "CONFIG_SPL_OS_NAME"\n");
+ 		hang();
+ 	}
++#else
++	bootimg_addr = CONFIG_C2A_SPL_KERNEL_OFFSET; /* 128KB */
++#endif
+ 
+ 	spl_load_kernel(bootimg_addr);
+ }
+@@ -1012,4 +1061,3 @@ char* spl_sfc_nor_load_image(void)
+ 	return NULL;
+ #endif
+ }
+-
+diff --git a/config.mk b/config.mk
+index f71e145d355..d34f51a538f 100644
+--- a/config.mk
++++ b/config.mk
+@@ -65,7 +65,7 @@ PLATFORM_LDFLAGS =
+ 
+ #########################################################################
+ 
+-HOSTCFLAGS	= -Wall -Wstrict-prototypes -O2 -fomit-frame-pointer \
++HOSTCFLAGS	= -Wall -Wno-error=implicit-function-declaration -O0 -Wstrict-prototypes -fomit-frame-pointer \
+ 		  $(HOSTCPPFLAGS)
+ HOSTSTRIP	= strip
+ 
+diff --git a/drivers/usb/gadget/cloner/Makefile b/drivers/usb/gadget/cloner/Makefile
+index f6092e6d363..38ffcaccb75 100644
+--- a/drivers/usb/gadget/cloner/Makefile
++++ b/drivers/usb/gadget/cloner/Makefile
+@@ -30,10 +30,10 @@ LIB	:= $(obj)libcloner_module_mg.o
+ COBJS-$(CONFIG_JZ_VERDOR_BURN_EXTPOL) += extend_policy_manager.o
+ SUBOBJS-$(CONFIG_JZ_VERDOR_BURN_EXTPOL) += expy/libexpy.o
+ 
+-COBJS-$(if $(CONFIG_MTD_SFCNOR)$(CONFIG_MTD_SFCNAND)$(CONFIG_MTD_SPINAND)$(CONFIG_JZ_SPI),y,n) += cloner_module_spisfc.o
++# COBJS-$(if $(CONFIG_MTD_SFCNOR)$(CONFIG_MTD_SFCNAND)$(CONFIG_MTD_SPINAND)$(CONFIG_JZ_SPI),y,n) += cloner_module_spisfc.o
+ COBJS-$(if $(CONFIG_JZ_SPINAND_SN)$(CONFIG_JZ_SPINAND_MAC),y,n) += cloner_spinand_firmware.o
+ COBJS-$(if $(CONFIG_JZ_NAND_MGR)$(CONFIG_MTD_NAND_JZ),y,n) += cloner_module_nand.o
+-COBJS-$(if $(CONFIG_JZ_MMC)$(CONFIG_JZ_SDHCI),y,n) += cloner_module_mmc.o
++# COBJS-$(if $(CONFIG_JZ_MMC)$(CONFIG_JZ_SDHCI),y,n) += cloner_module_mmc.o
+ COBJS-$(CONFIG_JZ_EFUSE) += cloner_module_efuse.o
+ 
+ 
+diff --git a/drivers/usb/gadget/cloner/burn_printf.h b/drivers/usb/gadget/cloner/burn_printf.h
+index f382f42a54e..5af63b26b88 100644
+--- a/drivers/usb/gadget/cloner/burn_printf.h
++++ b/drivers/usb/gadget/cloner/burn_printf.h
+@@ -1,16 +1,17 @@
+ #ifndef __LOG_H__
+ #define __LOG_H__
+ 
+-typedef struct {
+-	int enable;
+-	//int (*printf)(const char *fmt, ...);
+-} log_t;
++// typedef struct {
++// 	int enable;
++// 	//int (*printf)(const char *fmt, ...);
++// } log_t;
+ 
+-log_t log;
++// log_t log;
+ 
+-#define L	log
++// #define L	log
+ //#define CHECK_STATUS()		(L.enable && !!L.printf)
+-#define CHECK_STATUS()			(L.enable & 1)
++#define CHECK_STATUS()	(true)
++//		(L.enable & 1)
+ 
+ #define BURNNER_PRI(fmt, ...) do {		\
+ 	if(CHECK_STATUS())                      \
+diff --git a/drivers/usb/gadget/f_jz_cloner.c b/drivers/usb/gadget/f_jz_cloner.c
+index 63ae55346cf..fc2021153ae 100644
+--- a/drivers/usb/gadget/f_jz_cloner.c
++++ b/drivers/usb/gadget/f_jz_cloner.c
+@@ -267,7 +267,7 @@ void handle_args(struct usb_ep *ep,struct usb_request *req)
+ 				break;
+ 			case MAGIC_DEBUG:
+ 				debug_args = p->data;
+-				L.enable = debug_args->log_enabled;
++				// L.enable = debug_args->log_enabled;
+ 				break;
+ 			case MAGIC_DDR:
+ 				ddr_args = p->data;
+diff --git a/drivers/watchdog/jz_wdt.c b/drivers/watchdog/jz_wdt.c
+index 571d4a53be0..8508f98c2e7 100644
+--- a/drivers/watchdog/jz_wdt.c
++++ b/drivers/watchdog/jz_wdt.c
+@@ -142,6 +142,7 @@ void hw_watchdog_reset(void)
+         wdt_write(0x0, WDT_TCNT);
+ 
+ }
++
+ void hw_watchdog_init(void)
+ {
+         wdt_settimeout(CONFIG_WDT_TIMEOUT_BY_MS);
+diff --git a/include/configs/ax1800.h b/include/configs/ax1800.h
+new file mode 100644
+index 00000000000..db34aec1b5a
+--- /dev/null
++++ b/include/configs/ax1800.h
+@@ -0,0 +1,477 @@
++/*
++ * Ingenic X1600 configuration
++ *
++ * Copyright (c) 2015 Ingenic Semiconductor Co.,Ltd
++ * Author: Matthew <xu.guo@ingenic.com>
++ * Based on: include/configs/urboard.h
++ *           Written by Paul Burton <paul.burton@imgtec.com>
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License as
++ * published by the Free Software Foundation; either version 2 of
++ * the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston,
++ * MA 02111-1307 USA
++ */
++
++#ifndef __AX1800__
++#define __AX1800__
++
++#ifdef CONFIG_C2A_DEBUG
++#define DEBUG
++#endif
++
++/* Improved stage1 burner mode that doesn't force incorrect set of DDR2 params */
++/* #define CONFIG_C2A_BURNER */
++
++/* Retains burner-like bootability from USB but attempts full boot instead of exiting after init */
++/* #define CONFIG_C2A_SPL_STAGING */
++
++/* Drop to Ingenic USB bootloader in error paths */
++/* #define CONFIG_C2A_AGGRESSIVE_UNBRICK */
++
++/**
++ * Basic configuration(SOC, Cache, UART, DDR).
++ */
++#define CONFIG_MIPS32		/* MIPS32 CPU core */
++#define CONFIG_CPU_XBURST
++#define CONFIG_SYS_LITTLE_ENDIAN
++#define CONFIG_X1600
++#define CONFIG_SOC_NAME		x1600
++
++#define CONFIG_SPL_SERIAL_SUPPORT
++#define CONFIG_XBURST_TRAPS
++
++#define CONFIG_JZ_WATCHDOG
++/* #define CONFIG_HW_WATCHDOG */
++#define CONFIG_WDT_TIMEOUT_BY_MS 10000
++#define CONFIG_WDT_FREQ_BY_EXCLK
++
++/* Vendor seems to force this on DDR2(cheap ram unstable after first PLL init?) which wasn't configurable by code
++so ddr2_params.c was patched to allow it */
++#define CONFIG_DDR_DLL_RST
++
++#define CONFIG_SYS_APLL_FREQ        1104000000
++#define CONFIG_SYS_MPLL_FREQ        1400000000
++#define CONFIG_SYS_EPLL_FREQ        300000000
++
++#define CONFIG_CPU_SEL_PLL          APLL
++#define CONFIG_DDR_SEL_PLL          MPLL
++
++#define CONFIG_SYS_CPU_FREQ         1104000000
++#define CONFIG_SYS_MEM_FREQ         350000000
++
++#define CONFIG_SYS_EXTAL		24000000	/* EXTAL freq: 24 MHz */
++#define CONFIG_SYS_HZ			1000		/* incrementer freq */
++
++#define CONFIG_SYS_UART_INDEX		2
++#define CONFIG_BAUDRATE			3000000
++
++#define CONFIG_SYS_DCACHE_SIZE		(16 * 1024)
++#define CONFIG_SYS_DCACHELINE_SIZE	(32)
++#define CONFIG_SYS_DCACHE_WAYS		(4)
++#define CONFIG_SYS_ICACHE_SIZE		(16 * 1024)
++#define CONFIG_SYS_ICACHELINE_SIZE	(32)
++#define CONFIG_SYS_ICACHE_WAYS		(4)
++#define CONFIG_SYS_CACHELINE_SIZE	(32)
++/* A switch to configure whether cpu has a 2nd level cache */
++#define CONFIG_BOARD_SCACHE
++#define CONFIG_SYS_SCACHE_SIZE		(128 * 1024)
++#define CONFIG_SYS_SCACHELINE_SIZE	(32)
++#define CONFIG_SYS_SCACHE_WAYS		(8)
++
++
++#define  CGU_CLK_SRC {				\
++		{LCD, MPLL},			\
++		{MSC0, MPLL},			\
++		{SFC, MPLL},			\
++		{CIM, MPLL},			\
++		{SRC_EOF,SRC_EOF}		\
++	}
++
++/*
++ *#define CONFIG_DDR_TEST_CPU
++ *#define CONFIG_DDR_TEST
++ */
++
++#define CONFIG_DDR_DLL_OFF
++#define CONFIG_DDR_PARAMS_CREATOR
++#define CONFIG_DDR_HOST_CC
++/*#define CONFIG_DDR_FORCE_SELECT_CS1*/
++
++#define CONFIG_DDR_TYPE_DDR2
++#define CONFIG_DDR_TYPE_LPDDR2
++
++#ifdef CONFIG_DDR_TYPE_LPDDR2
++	/* #define CONFIG_LPDDR2_M54D5121632A
++	#define CONFIG_LPDDR2_SCB4BL256160AFL19GI
++	#define CONFIG_LPDDR2_SCKX4BL512160AAC */
++#endif
++
++#ifdef CONFIG_DDR_TYPE_DDR2
++	#define CONFIG_LVDDR_INNOPHY
++	/* #define CONFIG_DDR2_W975116NG18I
++	// #define CONFIG_DDR2_W971GV6NG
++	// #define CONFIG_DDR2_M14D2561616A
++	// #define CONFIG_DDR2_M14D1G1664A
++	// #define CONFIG_LVDDR_W9464L6KH*/
++	#define CONFIG_AX1800_DDR2
++#endif
++
++
++#define CONFIG_DDR_INNOPHY
++#define CONFIG_DDR_CS0          1   /* 1-connected, 0-disconnected */
++#define CONFIG_DDR_CS1          0   /* 1-connected, 0-disconnected */
++#define CONFIG_DDR_DW32         0   /* 1-32bit-width, 0-16bit-width */
++
++#define DDR2_CHIP_DRIVER_OUT_STRENGTH 0
++/* #define CONFIG_DDR_CHIP_ODT 1 */
++
++/*#define CONFIG_DDR_PHY_IMPEDANCE 40
++#define CONFIG_DDR_PHY_ODT_IMPEDANCE 120*/
++
++
++#define CONFIG_DDR_AUTO_SELF_REFRESH
++#define CONFIG_DDR_AUTO_SELF_REFRESH_CNT 257
++
++
++/* #define CONFIG_DDR_DLL_OFF */
++/*
++ * #define CONFIG_DDR_CHIP_ODT
++ * #define CONFIG_DDR_PHY_ODT
++ * #define CONFIG_DDR_PHY_DQ_ODT
++ * #define CONFIG_DDR_PHY_DQS_ODT
++ * #define CONFIG_DDR_PHY_IMPED_PULLUP		0xe
++ * #define CONFIG_DDR_PHY_IMPED_PULLDOWN	0xe
++ */
++
++/**
++ * Boot arguments definitions.
++ */
++
++#define CONFIG_BOOTARGS_AUTO_MODIFY	0	/*auto detect memory size, and modify bootargs for kernel.*/
++#define CONFIG_BOOTARGS_MEM_32M			"mem=32M@0x0"	/* customize bootargs for default env.*/
++#define CONFIG_BOOTARGS_MEM_64M			"mem=64M@0x0"	/* customize bootargs for default env.*/
++#define CONFIG_BOOTARGS_MEM_128M		"mem=128M@0x0"
++
++#if (CONFIG_BOOTARGS_AUTO_MODIFY == 1)
++	#define BOOTARGS_COMMON "console=ttyS2,3000000n8 "
++#else
++	#define BOOTARGS_COMMON "console=ttyS2,3000000n8 mem=64M@0x0 "
++#endif
++/**
++ * Boot command definitions.
++ */
++#define CONFIG_BOOTDELAY 1
++
++#define CONFIG_SPL_MAX_SIZE		26624	/* 18KB */
++#define CONFIG_SPL_PAD_TO		26624  /* equal to spl max size in x1600 */
++#define CONFIG_UBOOT_OFFSET             26624 /* equal to spl max size in x1600 */
++
++/* security */
++/*#define CONFIG_JZ_SCBOOT_TEST*/
++
++/* used for debug */
++/* #define CONFIG_SPL_LIBCOMMON_SUPPORT */
++
++/* SFC */
++#if defined(CONFIG_SPL_SFC_NOR) || defined(CONFIG_SPL_SFC_NAND)
++/* serial support */
++#define CONFIG_SPL_SERIAL_SUPPORT
++/* sfc gpio */
++#define CONFIG_SPL_SFC_SUPPORT
++/* spl version */
++#define CONFIG_SPL_VERSION	1
++#endif
++
++/* driver version */
++#define CONFIG_SFC_V20
++
++/* sfc nor config */
++#ifdef CONFIG_SPL_SFC_NOR
++#define CONFIG_JZ_SFC
++#define CONFIG_CMD_SFC_NOR
++#define CONFIG_JZ_SFC_NOR
++#define CONFIG_SPI_SPL_CHECK
++#define CONFIG_SFC_NOR_INIT_RATE		200000000
++#define CONFIG_SFC_NOR_RATE				280000000	/* value <= 400000000(sfc 100Mhz)*/
++#define CONFIG_SFC_QUAD
++#define CONFIG_SPIFLASH_PART_OFFSET		0x5800
++#define CONFIG_SPI_NORFLASH_PART_OFFSET		0x5874
++#define CONFIG_NOR_MAJOR_VERSION_NUMBER		1
++#define CONFIG_NOR_MINOR_VERSION_NUMBER		0
++#define CONFIG_NOR_REVERSION_NUMBER		0
++#define CONFIG_NOR_VERSION     (CONFIG_NOR_MAJOR_VERSION_NUMBER | (CONFIG_NOR_MINOR_VERSION_NUMBER << 8) | (CONFIG_NOR_REVERSION_NUMBER <<16))
++#define CONFIG_NOR_BUILTIN_PARAMS
++#endif
++
++/* sfc nand config */
++#ifdef  CONFIG_SPL_SFC_NAND
++#define CONFIG_JZ_SFC
++#define CONFIG_SFC_NAND_INIT_RATE		100000000
++#define CONFIG_SFC_NAND_RATE			100000000	/* value <= 400000000(sfc 100Mhz)*/
++#define CONFIG_SFC_QUAD
++#define CONFIG_SPI_SPL_CHECK
++#define CONFIG_SPIFLASH_PART_OFFSET		0x5800
++#define CONFIG_SPI_NAND_BPP                     (2048 +64)      /*Bytes Per Page*/
++#define CONFIG_SPI_NAND_PPB                     (64)            /*Page Per Block*/
++#define CONFIG_CMD_SFCNAND
++#define CONFIG_CMD_NAND
++#define CONFIG_SYS_MAX_NAND_DEVICE		1
++#define CONFIG_SYS_NAND_BASE			0xb3441000
++#define CONFIG_SYS_MAXARGS			16
++#define CONFIG_NAND_BUILTIN_PARAMS
++
++/* sfc nand env config */
++#define CONFIG_MTD_DEVICE
++#define CONFIG_CMD_SAVEENV		/* saveenv */
++#define CONFIG_CMD_UBI
++#define CONFIG_CMD_UBIFS
++#define CONFIG_CMD_MTDPARTS
++#define CONFIG_MTD_PARTITIONS
++#define MTDIDS_DEFAULT                  "nand0:nand"
++#define MTDPARTS_DEFAULT                "mtdparts=nand:1M(boot),8M(kernel),40M(rootfs),-(data)"
++#define CONFIG_SYS_NAND_BLOCK_SIZE	(128 * 1024)
++#endif
++
++#ifdef CONFIG_SPL_OS_BOOT
++    #if defined(CONFIG_SPL_SFC_NOR)
++	     #define CONFIG_SPL_BOOTARGS	BOOTARGS_COMMON "init=/linuxrc flashtype=nor  root=/dev/mtdblock_bbt_ro2 rootfstype=squashfs ro"
++    #else
++	     #define CONFIG_SPL_BOOTARGS	BOOTARGS_COMMON "ip=off init=/linuxrc ubi.mtd=2 root=ubi0:rootfs ubi.mtd=3 rootfstype=ubifs rw"
++    #endif
++
++    #ifdef CONFIG_OTA_VERSION30
++		#define CONFIG_PAT_KERNEL_NAME	  "kernel"
++		#define CONFIG_PAT_RECOVERY_NAME  "recovery"
++		#define CONFIG_PAT_NV_NAME        "nv"
++		#undef CONFIG_SPL_BOOTARGS
++		#ifdef CONFIG_SPL_SFC_NOR
++			#define CONFIG_PAT_USERFS_NAME   "userfs"
++			#define CONFIG_PAT_UPDATEFS_NAME "updatefs"
++			#define CONFIG_SPL_BOOTARGS    BOOTARGS_COMMON "ip=off init=/linuxrc rootfstype=cramfs root=/dev/mtdblock5 rw"
++		#else
++			#define CONFIG_SPL_BOOTARGS    BOOTARGS_COMMON "ip=off init=/linuxrc ubi.mtd=4 root=ubi0:system ubi.mtd=5 rootfstype=ubifs ro"
++			#define CONFIG_SPL_OTA_BOOTARGS    BOOTARGS_COMMON "ip=off ubi.mtd=4 ubi.mtd=5 root=/dev/ram0 rw rdinit=/linuxrc"
++		#endif
++    #else
++		#ifdef CONFIG_BOOT_VMLINUX
++			#undef CONFIG_SPL_BOOTARGS
++			#define CONFIG_SPL_BOOTARGS         BOOTARGS_COMMON "ip=off init=/linuxrc rootfstype=cramfs root=/dev/mtdblock2 rw"
++		#endif /* CONFIG_BOOT_VMLINUX */
++
++        #define CONFIG_SOFT_BURNER /* ??? */
++    #endif /*CONFIG_OTA_VERSION30*/
++	
++     #define CONFIG_SPL_OS_NAME        "kernel" /* spi offset of xImage being loaded */
++     #define CONFIG_SYS_SPL_ARGS_ADDR    CONFIG_SPL_BOOTARGS
++     #define CONFIG_SYS_SPL_OTA_ARGS_ADDR    CONFIG_SPL_OTA_BOOTARGS
++#endif	/* CONFIG_SPL_OS_BOOT */
++#define CONFIG_SYS_MMCSD_RAW_MODE_KERNEL_SECTOR	0x1800 /* address 0xa0000 */
++
++#define CONFIG_SYS_NAND_SELF_INIT
++/* end of sfc */
++
++/* GPIO */
++#define CONFIG_JZ_GPIO
++
++/**
++ * Command configuration.
++ */
++#define CONFIG_CMD_BOOTD	/* bootd			*/
++#define CONFIG_CMD_CONSOLE	/* coninfo			*/
++#define CONFIG_CMD_DHCP 	/* DHCP support			*/
++#define CONFIG_CMD_ECHO		/* echo arguments		*/
++#define CONFIG_CMD_EXT4 	/* ext4 support			*/
++#define CONFIG_CMD_FAT		/* FAT support			*/
++#define CONFIG_USE_XYZMODEM	/* xyzModem 			*/
++#define CONFIG_CMD_LOAD		/* serial load support 		*/
++#define CONFIG_CMD_LOADB	/* loadb			*/
++#define CONFIG_CMD_LOADS	/* loads			*/
++#define CONFIG_CMD_MEMORY	/* md mm nm mw cp cmp crc base loop mtest */
++#if 1
++#define CONFIG_LOOPW
++#define CONFIG_CMD_MEMTEST
++#endif
++#if 0
++#define CONFIG_SYS_ALT_MEMTEST
++#endif
++#define CONFIG_CMD_MISC		/* Misc functions like sleep etc*/
++#define CONFIG_CMD_MMC		/* MMC/SD support			*/
++#define CONFIG_CMD_NET		/* networking support			*/
++#define CONFIG_CMD_PING
++#define CONFIG_CMD_RUN		/* run command in env variable	*/
++#define CONFIG_CMD_SETGETDCR	/* DCR support on 4xx		*/
++#define CONFIG_CMD_SOURCE	/* "source" command support	*/
++#define CONFIG_CMD_GETTIME
++#define CONFIG_CMD_GPIO
++#define CONFIG_CMD_EXT2
++#define CONFIG_CMD_EXT4
++#define CONFIG_CMD_FAT
++#define CONFIG_CMD_SAVEENV	/* saveenv			*/
++#define CONFIG_EFI_PARTITION
++#define CONFIG_SOFT_BURNER
++
++/* USB */
++/*#define CONFIG_CMD_FASTBOOT*/
++/*#define CONFIG_USB_GADGET*/
++#define CONFIG_USB_GADGET_DUALSPEED
++#define CONFIG_USB_JZ_DWC2_UDC_V1_1
++#define CONFIG_FASTBOOT_GADGET
++#define CONFIG_FASTBOOT_FUNCTION
++#define CONFIG_G_FASTBOOT_VENDOR_NUM	(0x18d1)
++#define CONFIG_G_FASTBOOT_PRODUCT_NUM	(0xdddd)
++#define CONFIG_USB_GADGET_VBUS_DRAW 500
++
++
++/**
++ * Serial download configuration
++ */
++#define CONFIG_LOADS_ECHO	1	/* echo on for serial download */
++
++/**
++ * Miscellaneous configurable options
++ */
++#define CONFIG_DOS_PARTITION
++
++#define CONFIG_LZO
++#define CONFIG_RBTREE
++
++#define CONFIG_SKIP_LOWLEVEL_INIT
++#define CONFIG_BOARD_EARLY_INIT_F
++#define CONFIG_SYS_NO_FLASH
++#define CONFIG_SYS_FLASH_BASE	0 /* init flash_base as 0 */
++#define CONFIG_ENV_OVERWRITE
++#define CONFIG_MISC_INIT_R 1
++
++#define CONFIG_BOOTP_MASK	(CONFIG_BOOTP_DEFAUL)
++
++#define CONFIG_SYS_MAXARGS 16
++#define CONFIG_SYS_LONGHELP
++#define CONFIG_SYS_PROMPT CONFIG_SYS_BOARD "# "
++#define CONFIG_SYS_CBSIZE 1024 /* Console I/O Buffer Size */
++#define CONFIG_SYS_PBSIZE (CONFIG_SYS_CBSIZE + sizeof(CONFIG_SYS_PROMPT) + 16)
++
++#define CONFIG_SYS_MONITOR_LEN		(768 * 1024)
++#define CONFIG_SYS_MALLOC_LEN		(4 * 1024 * 1024)
++#define CONFIG_SYS_BOOTPARAMS_LEN	(128 * 1024)
++
++/*#define DBG_USE_UNCACHED_MEMORY*/
++#ifdef DBG_USE_UNCACHED_MEMORY
++#define CONFIG_SYS_SDRAM_BASE		0xA0000000 /* uncached (KSEG0) address */
++#define CONFIG_SYS_SDRAM_MAX_TOP	0xB0000000 /* don't run into IO space */
++#define CONFIG_SYS_INIT_SP_OFFSET	0x400000
++#define CONFIG_SYS_LOAD_ADDR		0xA8000000
++#define CONFIG_SYS_MEMTEST_START	0xA0000000
++#define CONFIG_SYS_MEMTEST_END		0xA8000000
++
++#define CONFIG_SYS_TEXT_BASE		0xA0100000
++#define CONFIG_SYS_MONITOR_BASE		CONFIG_SYS_TEXT_BASE
++#else /* DBG_USE_UNCACHED_MEMORY */
++#define CONFIG_SYS_SDRAM_BASE		0x80000000 /* cached (KSEG0) address */
++#define CONFIG_SYS_SDRAM_MAX_TOP	0x84000000 /* don't run into IO space */
++#define CONFIG_SYS_INIT_SP_OFFSET	0x400000
++#define CONFIG_SYS_LOAD_ADDR		0x80010000
++
++/* C2A - DRAM memtest range */
++#define CONFIG_SYS_MEMTEST_START	0xA0100000
++#define CONFIG_SYS_MEMTEST_END		0xA3F00000
++
++#define CONFIG_SYS_TEXT_BASE		0x80100000
++#define CONFIG_SYS_MONITOR_BASE		CONFIG_SYS_TEXT_BASE
++#endif /* DBG_USE_UNCACHED_MEMORY */
++
++/**
++ * Environment
++ */
++#ifdef  CONFIG_ENV_IS_NOWHERE
++#define CONFIG_ENV_SIZE         (32 << 10)
++#endif
++
++#if defined(CONFIG_ENV_IS_IN_SFC)
++#define CONFIG_CMD_SFC_NOR
++#define CONFIG_ENV_SIZE                 (4 << 10)
++#define CONFIG_ENV_OFFSET               0x3f000 /*write nor flash 252k address*/
++#define CONFIG_CMD_SAVEENV
++
++#elif defined(CONFIG_ENV_IS_NOWHERE) /* C2A: fix branch for CONFIG_ENV_IS_NOWHERE */
++#define XXX_CONFIG_SYS_REDUNDAND_ENVIRONMENT
++#else
++/* nand Environment variables */
++#define CONFIG_SYS_REDUNDAND_ENVIRONMENT
++#define CONFIG_ENV_SECT_SIZE	CONFIG_SYS_NAND_BLOCK_SIZE /* 128K */
++#define SPI_NAND_BLK            CONFIG_SYS_NAND_BLOCK_SIZE /* the spi nand block size */
++#define CONFIG_ENV_SIZE         SPI_NAND_BLK /* uboot is 1M but the last block size is the env */
++#define CONFIG_ENV_OFFSET       (CONFIG_SYS_NAND_BLOCK_SIZE * 6) /* offset is 768k */
++#define CONFIG_ENV_OFFSET_REDUND (CONFIG_ENV_OFFSET + CONFIG_ENV_SIZE)
++#define CONFIG_ENV_IS_IN_SFC_NAND
++#endif
++
++/**
++ * SPL configuration
++ */
++#define CONFIG_SPL_FRAMEWORK
++
++#define CONFIG_SPL_NO_CPU_SUPPORT_CODE
++#define CONFIG_SPL_START_S_PATH		"$(CPUDIR)/$(SOC)"
++#ifdef CONFIG_SPL_NOR_SUPPORT
++#define CONFIG_SPL_LDSCRIPT		"$(CPUDIR)/$(SOC)/u-boot-nor-spl.lds"
++#else
++#define CONFIG_SPL_LDSCRIPT		"$(CPUDIR)/$(SOC)/u-boot-spl.lds"
++#endif
++
++#define CONFIG_SYS_MMCSD_RAW_MODE_U_BOOT_SECTOR	86//0x5A //wli changed 0x20 /* 16KB offset */
++#define CONFIG_SYS_U_BOOT_MAX_SIZE_SECTORS	0x400 /* 512 KB */
++#define CONFIG_SYS_NAND_U_BOOT_OFFS	(CONFIG_SYS_NAND_BLOCK_SIZE * 4)
++#define CONFIG_SYS_NAND_U_BOOT_DST	CONFIG_SYS_TEXT_BASE
++#define CONFIG_SYS_NAND_U_BOOT_START	CONFIG_SYS_NAND_U_BOOT_DST
++#define CONFIG_SYS_NAND_U_BOOT_SIZE	(512 * 1024)
++
++#define CONFIG_SPL_BOARD_INIT
++#define CONFIG_SPL_LIBGENERIC_SUPPORT
++#define CONFIG_SPL_GPIO_SUPPORT
++/* #define CONFIG_SPL_I2C_SUPPORT */
++/* #define CONFIG_SPL_REGULATOR_SUPPORT */
++#define CONFIG_SPL_CORE_VOLTAGE		1100
++
++#if defined(CONFIG_C2A_SPL_STAGING) || defined(CONFIG_C2A_BURNER)
++	/* Don't corrupt binary at 0xC index... */
++	#undef CONFIG_SPI_SPL_CHECK
++#endif
++
++#ifdef CONFIG_SPL_SFC_NOR
++	#define CONFIG_C2A_SPL_BURNED_PARAMS
++	/* kernel uImage at 128KB offset */
++	#define CONFIG_C2A_SPL_KERNEL_OFFSET 0x20000
++	/* In staging force op-mode selection in SPL instead of reading it from flash params. */
++	#define CONFIG_C2A_SPL_QUAD_OPS_MODE 0
++	/* 0=enter_4byte directly, 1=write_enable+enter_4byte */
++	#define CONFIG_C2A_SPL_ADDR_OPS_MODE 0
++	/* chip_size controls whether 4-byte mode path is enabled (>0x1000000) */
++	#define CONFIG_C2A_SPL_CHIP_SIZE 0x1000000
++#endif
++
++#if !defined(CONFIG_BURNER) && !defined(CONFIG_C2A_BURNER)
++	#define CONFIG_SPL_TEXT_BASE		0x80001000
++#else
++	#define CONFIG_SPL_TEXT_BASE		0x80001800
++#endif
++
++/**
++ * Keys.
++ */
++#define CONFIG_GPIO_USB_DETECT		GPIO_PA(14)
++#define CONFIG_GPIO_USB_DETECT_ENLEVEL	1
++
++#define CONFIG_GPIO_PWR_WAKE		GPIO_PA(30)
++#define CONFIG_GPIO_PWR_WAKE_ENLEVEL	0
++
++#endif
+diff --git a/include/ddr/chips-v2/AX1800_DDR2.h b/include/ddr/chips-v2/AX1800_DDR2.h
+new file mode 100644
+index 00000000000..1c36070b0f8
+--- /dev/null
++++ b/include/ddr/chips-v2/AX1800_DDR2.h
+@@ -0,0 +1,73 @@
++#ifndef __AX1800_DDR2_H
++#define	__AX1800_DDR2_H
++
++// /*
++//  * CL:3,50M ~ 200M
++//  * CL:4,200M ~ 266M
++//  * CL:5,266M ~ 400M
++//  * CL:6,
++//  * CL:7,400M ~ 533M
++//  *
++//  * */
++
++static inline void AX1800_DDR2_init(void *data)
++{
++	#define CONFIG_DDR_CL	7
++	#define CONFIG_DDR_AL	0
++
++	struct ddr_chip_info *c = (struct ddr_chip_info *)data;
++	unsigned int RL = CONFIG_DDR_CL + CONFIG_DDR_AL;
++
++	c->DDR_ROW     = 13;
++	c->DDR_ROW1    = 13;
++	c->DDR_COL     = 10;
++	c->DDR_COL1    = 10;
++
++	c->DDR_BANK8   = 0;
++	c->DDR_CL      = CONFIG_DDR_CL;
++	c->DDR_AL      = 0;
++
++	c->DDR_tRAS    = DDR__ns(45);
++	c->DDR_tRTP    = DDR__ns(8);
++	c->DDR_tRP 	   = DDR__tck(6);// DDR__ps(17143);
++	c->DDR_tRCD    = DDR__tck(6);// DDR__ps(17143);
++	c->DDR_tRC     = DDR__ps(58125);
++	c->DDR_tRRD    = DDR__ns(10);
++	c->DDR_tWR     = DDR__ns(15);
++	c->DDR_tWTR    = DDR__ps(7500);
++	c->DDR_tRFC    = DDR__ns(126);
++	c->DDR_tXP     = DDR__tck(3);
++	c->DDR_tMRD    = DDR__tck(4);
++
++	c->DDR_BL      = 8;
++	c->DDR_RL      = DDR__tck(RL);
++	c->DDR_WL      = DDR__tck((RL - 1));
++
++	c->DDR_tCCD    = DDR__tck(2);
++	c->DDR_tFAW    = DDR__ns(45);
++	c->DDR_tCKE    = DDR__tck(3) ;
++	c->DDR_tCKESR  = DDR__tck(3);
++	c->DDR_tXARD   = DDR__tck(3);
++	c->DDR_tXARDS  = DDR__tck(10 - c->DDR_AL);
++
++	c->DDR_tXSNR   = (c->DDR_tRFC + DDR__ns(10));
++	c->DDR_tXSRD   = DDR__tck(200);
++	c->DDR_tREFI   = DDR__ns(3900);
++
++	c->DDR_CLK_DIV = 1;
++}
++
++#ifndef CONFIG_AX1800_DDR2_MEM_FREQ
++#define CONFIG_AX1800_DDR2_MEM_FREQ CONFIG_SYS_MEM_FREQ
++#endif
++
++#define AX1800_DDR2 {					\
++	.name 	= "AX1800-DDR2",					\
++	.id	= DDR_CHIP_ID(0, TYPE_DDR2, MEM_64M),	\
++	.type	= DDR2,						\
++	.freq	= CONFIG_AX1800_DDR2_MEM_FREQ,			\
++	.size	= 64,						\
++	.init	= AX1800_DDR2_init,				\
++}
++
++#endif /* __AX1800_DDR2_H */
+\ No newline at end of file
+diff --git a/include/ddr/ddr_chips_v2.h b/include/ddr/ddr_chips_v2.h
+index c29aded9176..2404ba87022 100644
+--- a/include/ddr/ddr_chips_v2.h
++++ b/include/ddr/ddr_chips_v2.h
+@@ -19,4 +19,6 @@
+ #include "chips-v2/LVDDR_W9464L6KH-5I.h"
+ #include "chips-v2/DDR3L_W634GU6QB-11.h"
+ 
++#include "chips-v2/AX1800_DDR2.h"
++
+ #endif
+diff --git a/include/generated/asm-offsets.h b/include/generated/asm-offsets.h
+new file mode 100644
+index 00000000000..5752966276b
+--- /dev/null
++++ b/include/generated/asm-offsets.h
+@@ -0,0 +1,11 @@
++#ifndef __ASM_OFFSETS_H__
++#define __ASM_OFFSETS_H__
++/*
++ * DO NOT MODIFY.
++ *
++ * This file was generated by make-asm-offsets
++ *
++ */
++
++
++#endif
+diff --git a/include/generated/cc_options.mk b/include/generated/cc_options.mk
+new file mode 100644
+index 00000000000..767905a034e
+--- /dev/null
++++ b/include/generated/cc_options.mk
+@@ -0,0 +1,8 @@
++CC_OPTIONS += -fno-stack-protector
++CC_OPTIONS += -Wno-format-nonliteral
++CC_OPTIONS += -Wno-format-security
++CC_OPTIONS += -fstack-usage
++CC_OPTIONS += -fno-toplevel-reorder
++CC_OPTIONS += -Wno-unused-variable
++CC_OPTIONS += -Wno-unused-but-set-variable
++CC_OPTIONS += -Wno-unused-label
+diff --git a/include/generated/clk_reg_values.h b/include/generated/clk_reg_values.h
+new file mode 100644
+index 00000000000..5a8edd1f9f5
+--- /dev/null
++++ b/include/generated/clk_reg_values.h
+@@ -0,0 +1,25 @@
++/*
++ * DO NOT MODIFY.
++ *
++ * This file was generated by clk_params_creator
++ *
++ */
++
++#ifndef __CLK_REG_VALUES_H__
++#define __CLK_REG_VALUES_H__
++
++#define CGU_REG_VALUE  {\
++	{0xb000002c, 0x2800000f, 29, 28, 27, 14, 0x80000000}, \
++	{0xb0000054, 0x2800000f, 29, 28, 27, 14, 0x40000000}, \
++	{0xb0000060, 0x00000000, 29, 0, 0, 15, 0x40000000}, \
++	{0xb000007c, 0x00000000, 29, 0, 0, 15, 0x40000000}, \
++	{0xb0000064, 0x2800000f, 29, 28, 27, 14, 0x40000000}, \
++	{0xb0000068, 0x2800000f, 29, 28, 27, 14, 0x40000000}, \
++	{0xb00000a4, 0x2800000f, 29, 28, 27, 14, 0x40000000}, \
++	{0xb0000074, 0x2800000f, 29, 28, 27, 14, 0x40000000}, \
++	{0xb000005c, 0x2800000f, 29, 28, 27, 14, 0x40000000}, \
++	{0xb0000078, 0x2800000f, 29, 28, 27, 14, 0x40000000}, \
++	{0xb000006c, 0x2800000f, 29, 28, 27, 14, 0x40000000}, \
++	}
++
++#endif /* __CLK_REG_VALUES_H__ */
+diff --git a/include/generated/ddr_reg_values.h b/include/generated/ddr_reg_values.h
+new file mode 100644
+index 00000000000..e4b507425d8
+--- /dev/null
++++ b/include/generated/ddr_reg_values.h
+@@ -0,0 +1,43 @@
++#ifndef __DDR_REG_VALUES_H__
++#define __DDR_REG_VALUES_H__
++#include <asm/ddr_innophy.h>
++struct ddr_reg_value supported_ddr_reg_values[] = {
++{
++	.h.name		       = "AX1800-DDR2",
++	.h.id		       = 0x00000042,
++	.h.type		       = 0x00000004,
++	.h.freq		       = 0x14dc9380,
++	.DDRC_CFG_VALUE        = 0x0a688a40,
++	.DDRC_CTRL_VALUE       = 0x00000002,
++	.DDRC_DLMR_VALUE       = 0x00000000,
++	.DDRC_DDLP_VALUE       = 0x00000000,
++	.DDRC_MMAP0_VALUE      = 0x000020fc,
++	.DDRC_MMAP1_VALUE      = 0x00002400,
++	.DDRC_REFCNT_VALUE     = 0x00540001,
++	.DDRC_TIMING1_VALUE    = 0x030d0606,
++	.DDRC_TIMING2_VALUE    = 0x02100607,
++	.DDRC_TIMING3_VALUE    = 0x20060415,
++	.DDRC_TIMING4_VALUE    = 0x16640033,
++	.DDRC_TIMING5_VALUE    = 0xff060405,
++	.DDRC_TIMING6_VALUE    = 0x32100505,
++	.DDRC_AUTOSR_EN_VALUE  = 0x00000001,
++	.DDRP_MEMCFG_VALUE     = 0x00000011,
++	.DDRP_CL_VALUE         = 0x00000007,
++	.DDRP_CWL_VALUE        = 0x00000006,
++	.DDR_MR0_VALUE         = 0x00000b73,
++	.DDR_MR1_VALUE         = 0x00002000,
++	.DDR_MR2_VALUE         = 0x00000000,
++	.DDR_MR3_VALUE         = 0x00000000,
++	.DDR_MR10_VALUE        = 0x00000000,
++	.DDR_MR11_VALUE        = 0x00000000,
++	.DDR_MR63_VALUE        = 0x00000000,
++	.DDR_CHIP_0_SIZE       = 0x04000000,
++	.DDR_CHIP_1_SIZE       = 0x00000000,
++	.REMMAP_ARRAY[0] = 0x03020d0c,
++	.REMMAP_ARRAY[1] = 0x07060504,
++	.REMMAP_ARRAY[2] = 0x0b0a0908,
++	.REMMAP_ARRAY[3] = 0x0f0e0100,
++	.REMMAP_ARRAY[4] = 0x13121110,
++},
++};
++#endif
+diff --git a/include/generated/generic-asm-offsets.h b/include/generated/generic-asm-offsets.h
+new file mode 100644
+index 00000000000..3acca741917
+--- /dev/null
++++ b/include/generated/generic-asm-offsets.h
+@@ -0,0 +1,15 @@
++#ifndef __ASM_OFFSETS_H__
++#define __ASM_OFFSETS_H__
++/*
++ * DO NOT MODIFY.
++ *
++ * This file was generated by make-asm-offsets
++ *
++ */
++
++#define GENERATED_GBL_DATA_SIZE (128) /* (sizeof(struct global_data) + 15) & ~15 */
++#define GENERATED_BD_INFO_SIZE (32) /* (sizeof(struct bd_info) + 15) & ~15 */
++#define GD_SIZE (124) /* sizeof(struct global_data) */
++#define GD_BD (0) /* offsetof(struct global_data, bd) */
++
++#endif
+diff --git a/include/generated/pll_reg_values.h b/include/generated/pll_reg_values.h
+new file mode 100644
+index 00000000000..617e692c700
+--- /dev/null
++++ b/include/generated/pll_reg_values.h
+@@ -0,0 +1,36 @@
++/*
++ * DO NOT MODIFY.
++ *
++ * This file was generated by pll_params_creator
++ *
++ */
++
++#ifndef __PLL_REG_VALUES_H__
++#define __PLL_REG_VALUES_H__
++
++#define APLL_M_VALUE 		 0x0000002e
++#define APLL_N_VALUE 		 0x00000001
++#define APLL_OD0_VALUE 		 0x00000001
++#define APLL_OD1_VALUE 		 0x00000001
++#define APLL_EN_VALUE 		 0x00000001
++#define MPLL_M_VALUE 		 0x000000af
++#define MPLL_N_VALUE 		 0x00000003
++#define MPLL_OD0_VALUE 		 0x00000001
++#define MPLL_OD1_VALUE 		 0x00000001
++#define MPLL_EN_VALUE 		 0x00000001
++#define EPLL_M_VALUE 		 0x00000019
++#define EPLL_N_VALUE 		 0x00000001
++#define EPLL_OD0_VALUE 		 0x00000001
++#define EPLL_OD1_VALUE 		 0x00000002
++#define EPLL_EN_VALUE 		 0x00000001
++#define CDIV_REG_VALUE		 0x00000000
++#define L2DIV_REG_VALUE		 0x00000001
++#define H0DIV_REG_VALUE		 0x00000004
++#define H2DIV_REG_VALUE		 0x00000004
++#define PDIV_REG_VALUE		 0x00000009
++#define SEL_H2PLL_REG_VALUE		 0x00000002
++#define SEL_H0PLL_REG_VALUE		 0x00000002
++#define SEL_CPLL_REG_VALUE		 0x00000001
++#define SEL_SRC_REG_VALUE		 0x00000002
++
++#endif /* __PLL_REG_VALUES_H__ */
+diff --git a/include/generated/sfc_timing_val.h b/include/generated/sfc_timing_val.h
+new file mode 100644
+index 00000000000..9bae30d6bbe
+--- /dev/null
++++ b/include/generated/sfc_timing_val.h
+@@ -0,0 +1,13 @@
++/*
++ * DO NOT MODIFY.
++ *
++ * This file was generated by sfc_timing_params
++ *
++ */
++
++#ifndef __SFC_TIMING_VAL_H__
++#define __SFC_TIMING_VAL_H__
++
++#define DEF_TIM_VAL 0x000101e7
++
++#endif /* __SFC_TIMING_VAL_H__ */
+diff --git a/include/generated/timestamp_autogenerated.h b/include/generated/timestamp_autogenerated.h
+new file mode 100644
+index 00000000000..aaee878adde
+--- /dev/null
++++ b/include/generated/timestamp_autogenerated.h
+@@ -0,0 +1,2 @@
++#define U_BOOT_DATE "Mar 02 2026"
++#define U_BOOT_TIME "15:08:58"
+diff --git a/include/generated/version_autogenerated.h b/include/generated/version_autogenerated.h
+new file mode 100644
+index 00000000000..e0f1f589f32
+--- /dev/null
++++ b/include/generated/version_autogenerated.h
+@@ -0,0 +1,4 @@
++#define PLAIN_VERSION "2013.07"
++#define U_BOOT_VERSION "U-Boot 2013.07"
++#define CC_VERSION_STRING "mipsel-buildroot-linux-musl-gcc.br_real (Buildroot 2021.11-18033-g83947c7bb6) 14.3.0"
++#define LD_VERSION_STRING "GNU ld (GNU Binutils) 2.43.1"
+diff --git a/include/linux/compiler-gcc13.h b/include/linux/compiler-gcc13.h
+new file mode 100644
+index 00000000000..52021e1ef51
+--- /dev/null
++++ b/include/linux/compiler-gcc13.h
+@@ -0,0 +1,68 @@
++#ifndef __LINUX_COMPILER_H
++#error "Please don't include <linux/compiler-gcc7.h> directly, include <linux/compiler.h> instead."
++#endif
++
++#define __used __attribute__((__used__))
++#define __must_check __attribute__((warn_unused_result))
++#define __compiler_offsetof(a,b) __builtin_offsetof(a,b)
++
++/*
++ *  Mark functions as cold. gcc will assume any path leading to a call
++ * to them will be unlikely. This means a lot of manual unlikely()s
++ * are unnecessary now for any paths leading to the usual suspects
++ * like BUG(), printk(), panic() etc. [but let's keep them for now for
++ * older compilers]
++ *
++ * Early snapshots of gcc 4.3 don't support this and we can't detect this
++ * in the preprocessor, but we can live with this because they're unreleased.
++ * Maketime probing would be overkill here.
++ *
++ * gcc also has a __attribute__((__hot__)) to move hot functions into
++ * a special section, but I don't see any sense in this right now in
++ * the kernel context
++*/
++#define __cold __attribute__((__cold__))
++
++#define __UNIQUE_ID(prefix) __PASTE(__PASTE(__UNIQUE_ID_, prefix), __COUNTER__)
++
++#ifndef __CHECKER__
++# define __compiletime_warning(message) __attribute__((warning(message)))
++# define __compiletime_error(message) __attribute__((error(message)))
++#endif /* __CHECKER__ */
++
++/*
++ * Mark a position in code as unreachable. This can be used to
++ * suppress control flow warnings after asm blocks that transfer
++ * control elsewhere.
++ *
++ * Early snapshots of gcc 4.5 don't support this and we can't detect
++ * this in the preprocessor, but we can live with this because they're
++ * unreleased. Really, we need to have autoconf for the kernel.
++ */
++#define unreachable() __builtin_unreachable()
++
++/* Mark a function definition as prohibited from being cloned. */
++#define __noclone __attribute__((__noclone__))
++
++/*
++ * Tell the optimizer that something else uses this function or variable.
++ */
++#define __visible __attribute__((externally_visible))
++
++/*
++ * GCC 'asm goto' miscompiles certain code sequences:
++ *
++ * http://gcc.gnu.org/bugzilla/show_bug.cgi?id=58670
++ *
++ * Work it around via a compiler barrier quirk suggested by Jakub Jelinek.
++ * Fixed in GCC 4.8.2 and later versions.
++ *
++ * (asm goto is automatically volatile - the naming reflects this.)
++ */
++#define asm_volatile_goto(x...) do { asm goto(x); asm (""); } while (0)
++
++#ifdef CONFIG_ARCH_USE_BUILTIN_BSWAP
++#define __HAVE_BUILTIN_BSWAP32__
++#define __HAVE_BUILTIN_BSWAP64__
++#define __HAVE_BUILTIN_BSWAP16__
++#endif /* CONFIG_ARCH_USE_BUILTIN_BSWAP */
+diff --git a/include/linux/compiler-gcc14.h b/include/linux/compiler-gcc14.h
+new file mode 100644
+index 00000000000..52021e1ef51
+--- /dev/null
++++ b/include/linux/compiler-gcc14.h
+@@ -0,0 +1,68 @@
++#ifndef __LINUX_COMPILER_H
++#error "Please don't include <linux/compiler-gcc7.h> directly, include <linux/compiler.h> instead."
++#endif
++
++#define __used __attribute__((__used__))
++#define __must_check __attribute__((warn_unused_result))
++#define __compiler_offsetof(a,b) __builtin_offsetof(a,b)
++
++/*
++ *  Mark functions as cold. gcc will assume any path leading to a call
++ * to them will be unlikely. This means a lot of manual unlikely()s
++ * are unnecessary now for any paths leading to the usual suspects
++ * like BUG(), printk(), panic() etc. [but let's keep them for now for
++ * older compilers]
++ *
++ * Early snapshots of gcc 4.3 don't support this and we can't detect this
++ * in the preprocessor, but we can live with this because they're unreleased.
++ * Maketime probing would be overkill here.
++ *
++ * gcc also has a __attribute__((__hot__)) to move hot functions into
++ * a special section, but I don't see any sense in this right now in
++ * the kernel context
++*/
++#define __cold __attribute__((__cold__))
++
++#define __UNIQUE_ID(prefix) __PASTE(__PASTE(__UNIQUE_ID_, prefix), __COUNTER__)
++
++#ifndef __CHECKER__
++# define __compiletime_warning(message) __attribute__((warning(message)))
++# define __compiletime_error(message) __attribute__((error(message)))
++#endif /* __CHECKER__ */
++
++/*
++ * Mark a position in code as unreachable. This can be used to
++ * suppress control flow warnings after asm blocks that transfer
++ * control elsewhere.
++ *
++ * Early snapshots of gcc 4.5 don't support this and we can't detect
++ * this in the preprocessor, but we can live with this because they're
++ * unreleased. Really, we need to have autoconf for the kernel.
++ */
++#define unreachable() __builtin_unreachable()
++
++/* Mark a function definition as prohibited from being cloned. */
++#define __noclone __attribute__((__noclone__))
++
++/*
++ * Tell the optimizer that something else uses this function or variable.
++ */
++#define __visible __attribute__((externally_visible))
++
++/*
++ * GCC 'asm goto' miscompiles certain code sequences:
++ *
++ * http://gcc.gnu.org/bugzilla/show_bug.cgi?id=58670
++ *
++ * Work it around via a compiler barrier quirk suggested by Jakub Jelinek.
++ * Fixed in GCC 4.8.2 and later versions.
++ *
++ * (asm goto is automatically volatile - the naming reflects this.)
++ */
++#define asm_volatile_goto(x...) do { asm goto(x); asm (""); } while (0)
++
++#ifdef CONFIG_ARCH_USE_BUILTIN_BSWAP
++#define __HAVE_BUILTIN_BSWAP32__
++#define __HAVE_BUILTIN_BSWAP64__
++#define __HAVE_BUILTIN_BSWAP16__
++#endif /* CONFIG_ARCH_USE_BUILTIN_BSWAP */
+diff --git a/lib/hang.c b/lib/hang.c
+index fc1286c0b77..f1696cde011 100644
+--- a/lib/hang.c
++++ b/lib/hang.c
+@@ -37,6 +37,10 @@
+  */
+ void hang(void)
+ {
++	#ifdef CONFIG_SPL_BUILD
++		spl_board_unbrick(); // CONFIG_C2A_AGGRESSIVE_UNBRICK
++	#endif
++
+ #if !defined(CONFIG_SPL_BUILD) || (defined(CONFIG_SPL_LIBCOMMON_SUPPORT) && \
+ 		defined(CONFIG_SPL_SERIAL_SUPPORT))
+ 	puts("### ERROR ### Please RESET the board ###\n");
+diff --git a/tools/ingenic-tools/ddr_creator_x1600/ddr2_params.c b/tools/ingenic-tools/ddr_creator_x1600/ddr2_params.c
+index 7be7a7ed712..55aeedb601c 100644
+--- a/tools/ingenic-tools/ddr_creator_x1600/ddr2_params.c
++++ b/tools/ingenic-tools/ddr_creator_x1600/ddr2_params.c
+@@ -14,6 +14,10 @@ static void fill_mr_params_ddr2(struct ddr_params *p)
+ 	unsigned int tmp = 0;
+ 	struct ddr2_params *params = &p->private_params.ddr2_params;
+ 
++#ifdef CONFIG_DDR_DLL_RST
++	p->mr0.ddr2.DR = 1; //dll reset
++#endif
++
+ 	/* MRn registers */
+ 	if(p->bl == 4)
+ 		p->mr0.ddr2.BL = 2;
+@@ -100,7 +104,7 @@ static void ddrc_params_creator_ddr2(struct ddrc_reg *ddrc, struct ddr_params *p
+ 	if(ddrc->timing1.b.tWL > 0)
+ 		ddrc->timing5.b.tWDLAT = ddrc->timing1.b.tWL - 1;
+ 	else{
+-		out_error("DDR_WL too small! check %s %d\n",__FILE__,__LINE__);
++		out_error("DDR_WL too small %d! check %s %d\n",ddrc->timing1.b.tWL, __FILE__,__LINE__);
+ 		assert(1);
+ 	}
+ 	if(ddrc->timing2.b.tRL > 1)
+diff --git a/tools/ingenic-tools/ddr_creator_x1600/ddr_params_creator.c b/tools/ingenic-tools/ddr_creator_x1600/ddr_params_creator.c
+index db1bfafa191..91511f3b5b4 100644
+--- a/tools/ingenic-tools/ddr_creator_x1600/ddr_params_creator.c
++++ b/tools/ingenic-tools/ddr_creator_x1600/ddr_params_creator.c
+@@ -141,6 +141,7 @@ static void ddrc_base_params_creator_common(struct ddrc_reg *ddrc, struct ddr_pa
+ 	/* tWTR is differ in lpddr & lpddr2 & ddr2 & ddr3*/
+ 	DDRC_TIMING_SET(1,ddr_base_params,tWR,6);
+ 
++	// printf("WTF %u %d",p->private_params.ddr_base_params.WL,p->private_params.ddr_base_params.WL );
+ 	tmp =ps2cycle_ceil(p->private_params.ddr_base_params.WL,1);
+ 	ASSERT_MASK(tmp,6);
+ 	ddrc->timing1.b.tWL = tmp;
+diff --git a/tools/ingenic-tools/ddr_creator_x1600/ddr_params_creator.h b/tools/ingenic-tools/ddr_creator_x1600/ddr_params_creator.h
+index 032a88d38d5..1973e9e9362 100644
+--- a/tools/ingenic-tools/ddr_creator_x1600/ddr_params_creator.h
++++ b/tools/ingenic-tools/ddr_creator_x1600/ddr_params_creator.h
+@@ -80,4 +80,6 @@ struct ddr_out_impedance* find_nearby_impedance(struct ddr_out_impedance *table,
+ int ps2cycle_ceil(int ps,int div_tck);
+ void register_ddr_creator(struct ddr_creator_ops *ops);
+ void ddr_creator_init(void);
++// int create_one_ddr_params(struct ddr_chip_info *chip, struct ddr_reg_value *reg);
++
+ #endif /*__DDR_PARAMS_CREATOR_H__*/
+diff --git a/tools/ingenic-tools/ddr_creator_x1600/supported_ddr_chips.c b/tools/ingenic-tools/ddr_creator_x1600/supported_ddr_chips.c
+index 597d520310e..42a4c509361 100644
+--- a/tools/ingenic-tools/ddr_creator_x1600/supported_ddr_chips.c
++++ b/tools/ingenic-tools/ddr_creator_x1600/supported_ddr_chips.c
+@@ -28,6 +28,10 @@ struct ddr_chip_info supported_ddr_chips[] = {
+ #ifdef CONFIG_LVDDR_W9464L6KH
+ 	LVDDR_W9464L6KH,
+ #endif
++#ifdef CONFIG_AX1800_DDR2
++	AX1800_DDR2,
++#endif
++
+ };
+ 
+ 
+diff --git a/tools/ingenic-tools/sfc_builtin_params/nor_device.c b/tools/ingenic-tools/sfc_builtin_params/nor_device.c
+index ce843152224..2e552bb74ef 100644
+--- a/tools/ingenic-tools/sfc_builtin_params/nor_device.c
++++ b/tools/ingenic-tools/sfc_builtin_params/nor_device.c
+@@ -4,8 +4,8 @@
+ /*
+  * Only one is supported at a time
+  */
+-#define CONFIG_INGENIC_GD25Q127C
+-//#define CONFIG_INGENIC_XXXXX
++// #define CONFIG_INGENIC_GD25Q127C
++#define CONFIG_INGENIC_XT25F128B
+ 
+ 
+ /*
+@@ -46,8 +46,33 @@ struct spi_nor_info builtin_spi_nor_info = {
+ 	.addr_ops_mode = 0,
+ #endif
+ 
+-#ifdef CONFIG_INGENIC_XXXXX
+-	//add your flash
++#ifdef CONFIG_INGENIC_XT25F128B
++	/* XT25F128B */
++	.name = "XT25F128B",
++	.id = 0x0b4018,
++
++	.read_standard	  = CMD_INFO(0x03, 0, 3, 0),
++	.read_quad	  = CMD_INFO(0x6b, 8, 3, 5),
++	.write_standard	  = CMD_INFO(0x02, 0, 3, 0),
++	.write_quad	  = CMD_INFO(0x32, 0, 3, 5),
++	.sector_erase	  = CMD_INFO(0x52, 0, 3, 0),
++	.wr_en		  = CMD_INFO(0x06, 0, 0, 0),
++	.en4byte	  = CMD_INFO(0, 0, 0, 0),
++	.quad_set	  = ST_INFO(0x31, 1, 1, 1, 1, 0),
++	.quad_get	  = ST_INFO(0x35, 1, 1, 1, 1, 0),
++	.busy		  = ST_INFO(0x05, 0, 1, 0, 1, 0),
++
++	.tCHSH = 5,
++	.tSLCH = 5,
++	.tSHSL_RD = 20,
++	.tSHSL_WR = 20,
++
++	.chip_size = 16777216,
++	.page_size = 256,
++	.erase_size = 32768,
++
++	.quad_ops_mode = 0,
++	.addr_ops_mode = 0,
+ #endif
+ };
+ 
+@@ -61,15 +86,15 @@ struct norflash_partitions builtin_norflash_partitions = {
+ 	.num_partition_info = 3,
+ 
+ 	.nor_partition = {
+-
++		/* C2A: only care about kernel partition, our Linux won't read these */
+ 		[0].name = "uboot",
+ 		[0].offset = 0x0,
+-		[0].size =   0x40000,
++		[0].size =   0x20000,
+ 		[0].mask_flags = NORFLASH_PART_RW,
+ 
+ 		[1].name = "kernel",
+-		[1].offset = 0x40000,
+-		[1].size =   0x300000,
++		[1].offset = 0x20000,
++		[1].size =   0x400000, /* C2A: 4MB kernel limit */
+ 		[1].mask_flags = NORFLASH_PART_RW,
+ 
+ 		[2].name = "rootfs",
+diff --git a/tools/ingenic-tools/spl_params_fixer_x1600.c b/tools/ingenic-tools/spl_params_fixer_x1600.c
+index aaa15b8ac41..3235247eb11 100644
+--- a/tools/ingenic-tools/spl_params_fixer_x1600.c
++++ b/tools/ingenic-tools/spl_params_fixer_x1600.c
+@@ -174,6 +174,9 @@ struct desc descriptors[14] = {
+ 	/*
+ 	 * saddr,	paddr,		value,		poll_h_mask,	poll_l_mask
+ 	 */
++	 /* AX1800: this OTG reset was originally added here for some reason */
++	{CPM_SRBC,	0,	CPM_SLBC_OTG_SR,	0,	0},
++
+ 	{CPM_CPAPCR,	CPM_CPAPCR,	APLL_VAL,	APLL_POLL,	0},
+ 	{CPM_CPCCR,	CPM_CPCSR,	CPCCR_FRQ_VAL,	0,		CPCCR_FRQ_POLL},
+ 	{CPM_CPCCR,	CPM_CPCSR,	CPCCR_SEL_VAL,	CPCCR_SEL_POLL,	0},
+@@ -185,6 +188,8 @@ struct desc descriptors[14] = {
+ 	{CPM_MSC1CDR,	CPM_MSC1CDR,	MSC1_VAL,	0,		0x10000000},
+ #endif
+ 	{CPM_SFCCDR,	CPM_SFCCDR,	SFC_VAL,	0,		0x10000000},
++
++	{CPM_SRBC,	0,	0,	0,	0},
+ 	{0xffff,	0xffff, 	0,		0,		0},
+ };
+ 

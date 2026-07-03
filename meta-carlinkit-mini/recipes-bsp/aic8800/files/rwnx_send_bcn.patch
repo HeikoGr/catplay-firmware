@@ -1,0 +1,39 @@
+diff --git a/aic8800_fdrv/rwnx_msg_tx.c b/aic8800_fdrv/rwnx_msg_tx.c
+index 678fddf..e5f8bcc 100644
+--- a/aic8800_fdrv/rwnx_msg_tx.c
++++ b/aic8800_fdrv/rwnx_msg_tx.c
+@@ -720,14 +720,32 @@ int rwnx_send_key_del(struct rwnx_hw *rwnx_hw, uint8_t hw_key_idx)
+ int rwnx_send_bcn(struct rwnx_hw *rwnx_hw, u8 *buf, u8 vif_idx, u16 bcn_len)
+ {
+ 	struct apm_set_bcn_ie_req *bcn_ie_req;
++	u16 max_bcn_ie_len = sizeof(((struct apm_set_bcn_ie_req *)0)->bcn_ie);
++	u16 bcn_var_offset = offsetof(struct ieee80211_mgmt, u.beacon.variable);
++	u16 tx_bcn_len = bcn_len;
++	u8 *tx_bcn = buf;
++	u16 off = 0;
++	int ie_idx = 0;
++
++	printk(KERN_INFO "aic_bcn_ie_req vif=%u len=%u var_off=%u max=%u\n",
++	       vif_idx, bcn_len, bcn_var_offset, max_bcn_ie_len);
++	if (tx_bcn_len > max_bcn_ie_len) {
++		printk(KERN_ERR "aic_bcn_ie_req oversize tx_len=%u (max=%u) - refusing request\n",
++		       tx_bcn_len, max_bcn_ie_len);
++		kfree(buf);
++		return -EMSGSIZE;
++	}
++
+ 	bcn_ie_req = rwnx_msg_zalloc(APM_SET_BEACON_IE_REQ, TASK_APM, DRV_TASK_ID,
+ 							   sizeof(struct apm_set_bcn_ie_req));
+-	if (!bcn_ie_req)
++	if (!bcn_ie_req) {
++		kfree(buf);
+ 		return -ENOMEM;
++	}
+ 
+ 	bcn_ie_req->vif_idx = vif_idx;
+ 	bcn_ie_req->bcn_ie_len = bcn_len;
+-	memcpy(bcn_ie_req->bcn_ie, (u8 *)buf, bcn_len);
++	memcpy(bcn_ie_req->bcn_ie, buf, bcn_len);
+ 	kfree(buf);
+ 
+ 	return rwnx_send_msg(rwnx_hw, bcn_ie_req, 1, APM_SET_BEACON_IE_CFM, NULL);

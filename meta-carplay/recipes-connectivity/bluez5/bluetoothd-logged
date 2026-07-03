@@ -1,0 +1,11 @@
+#!/bin/sh
+
+LOGFILE=/var/log/bluetooth.log
+DAEMON="$(dirname "$0")/bluetoothd"
+
+mkdir -p "${LOGFILE%/*}"
+"$DAEMON" -n "$@" >> "$LOGFILE" 2>&1 &
+pid=$!
+
+trap 'kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; exit 0' TERM INT
+wait "$pid"

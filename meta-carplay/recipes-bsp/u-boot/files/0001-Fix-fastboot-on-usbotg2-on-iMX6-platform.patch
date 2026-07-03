@@ -1,0 +1,24 @@
+Date: Wed, 23 Jul 2025 04:17:13 +0200
+Subject: [PATCH] Fix fastboot on usbotg2 on iMX6 platform
+
+Credits: https://www.taterli.com/8973
+
+---
+ drivers/usb/gadget/ci_udc.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/drivers/usb/gadget/ci_udc.c b/drivers/usb/gadget/ci_udc.c
+index bb838b30a4d..e292c7b921a 100644
+--- a/drivers/usb/gadget/ci_udc.c
++++ b/drivers/usb/gadget/ci_udc.c
+@@ -1393,6 +1393,7 @@ static int ci_udc_otg_clk_init(struct udevice *dev,
+ 
+ static int ci_udc_otg_phy_mode(struct udevice *dev)
+ {
++	return USB_INIT_DEVICE; /* XXX: fix fastboot on usbotg2 */
+	struct ci_udc_priv_data *priv = dev_get_priv(dev);
+ 
+	void *__iomem phy_ctrl, *__iomem phy_status;
+-- 
+2.43.0
+

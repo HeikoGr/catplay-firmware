@@ -1,0 +1,109 @@
+Upstream-Status: Inappropriate [hack]
+--- a/src/shared/bap.c
++++ b/src/shared/bap.c
+@@ -36,8 +36,7 @@
+ #define NUM_SOURCE 2
+ #define NUM_ASES (NUM_SINKS + NUM_SOURCE)
+ #define ASE_UUID(_id) (_id < NUM_SINKS ? ASE_SINK_UUID : ASE_SOURCE_UUID)
+-#define DBG(_bap, fmt, arg...) \
+-	bap_debug(_bap, "%s:%s() " fmt, __FILE__, __func__, ## arg)
++#define DBG(_bap, fmt, arg...) do { } while (0)
+ 
+ #define LTV(_type, _bytes...) \
+ 	{ \
+--- a/src/shared/bass.c
++++ b/src/shared/bass.c
+@@ -31,8 +31,7 @@
+ 
+ #define MAX_BIS_BITMASK_IDX		31
+ 
+-#define DBG(_bass, fmt, arg...) \
+-	bass_debug(_bass, "%s:%s() " fmt, __FILE__, __func__, ## arg)
++#define DBG(_bass, fmt, arg...) do { } while (0)
+ 
+ struct bt_bass_db;
+ 
+--- a/src/shared/csip.c
++++ b/src/shared/csip.c
+@@ -30,8 +30,7 @@
+ #include "src/shared/crypto.h"
+ #include "src/shared/csip.h"
+ 
+-#define DBG(_csip, fmt, arg...) \
+-	csip_debug(_csip, "%s:%s() " fmt, __FILE__, __func__, ## arg)
++#define DBG(_csip, fmt, arg...) do { } while (0)
+ 
+ /* SIRK is now hardcoded in the code. This can be moved
+  * to a configuration file. Since the code is to validate
+--- a/src/shared/gatt-client.c
++++ b/src/shared/gatt-client.c
+@@ -37,9 +37,7 @@
+ 
+ #define GATT_SVC_UUID	0x1801
+ #define SVC_CHNGD_UUID	0x2a05
+-#define DBG(_client, _format, arg...) \
+-	gatt_log(_client, "[%p] %s:%s() " _format, _client, __FILE__, \
+-		__func__, ## arg)
++#define DBG(_client, _format, arg...) do { } while (0)
+ 
+ struct ready_cb {
+ 	bt_gatt_client_callback_t callback;
+--- a/src/shared/gatt-server.c
++++ b/src/shared/gatt-server.c
+@@ -42,8 +42,7 @@
+ 
+ #define NFY_MULT_TIMEOUT 10
+ 
+-#define DBG(_server, _format, arg...) \
+-	gatt_log(_server, "%s:%s() " _format, __FILE__, __func__, ## arg)
++#define DBG(_server, _format, arg...) do { } while (0)
+ 
+ struct async_read_op {
+ 	struct bt_att_chan *chan;
+--- a/src/shared/mcp.c
++++ b/src/shared/mcp.c
+@@ -29,8 +29,7 @@
+ #include "src/shared/mcp.h"
+ #include "src/shared/mcs.h"
+ 
+-#define DBG(_mcp, fmt, arg...) \
+-	mcp_debug(_mcp, "%s:%s() " fmt, __FILE__, __func__, ## arg)
++#define DBG(_mcp, fmt, arg...) do { } while (0)
+ 
+ struct bt_mcp_db {
+ 	struct gatt_db *db;
+--- a/src/shared/micp.c
++++ b/src/shared/micp.c
+@@ -26,8 +26,7 @@
+ #include "src/shared/gatt-helpers.h"
+ #include "src/shared/micp.h"
+ 
+-#define DBG(_micp, fmt, arg...) \
+-	micp_debug(_micp, "%s:%s() " fmt, __FILE__, __func__, ##arg)
++#define DBG(_micp, fmt, arg...) do { } while (0)
+ 
+ /* Application error codes */
+ #define MICP_ERROR_MUTE_DISABLED            0x80
+--- a/src/shared/mgmt.c
++++ b/src/shared/mgmt.c
+@@ -27,8 +27,7 @@
+ #include "src/shared/mgmt.h"
+ #include "src/shared/timeout.h"
+ 
+-#define DBG(_mgmt, _format, arg...) \
+-	mgmt_log(_mgmt, "%s:%s() " _format, __FILE__, __func__, ## arg)
++#define DBG(_mgmt, _format, arg...) do { } while (0)
+ 
+ struct mgmt {
+ 	int ref_count;
+--- a/src/shared/vcp.c
++++ b/src/shared/vcp.c
+@@ -27,8 +27,7 @@
+ #include "src/shared/gatt-client.h"
+ #include "src/shared/vcp.h"
+ 
+-#define DBG(_vcp, fmt, arg...) \
+-	vcp_debug(_vcp, "%s:%s() " fmt, __FILE__, __func__, ## arg)
++#define DBG(_vcp, fmt, arg...) do { } while (0)
+ 
+ #define VCP_STEP_SIZE 1

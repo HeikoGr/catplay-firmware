@@ -1,0 +1,513 @@
+Subject: [PATCH] storage: use no-op atomic writes for key files
+
+BlueZ rewrites several storage key files even when the serialized
+contents are unchanged.  On JFFS2 this creates unnecessary churn, and
+the old create-then-write flow can leave an empty file behind when power
+is lost between the two operations.
+
+Add a small storage write helper that compares the existing contents
+before writing.  When the data changed, write to a temporary file in the
+same directory, fsync it, rename it over the target and fsync the
+directory so either the old or new file survives a reboot.  Use the
+helper for device storage writes, including the cache and LinkKey paths,
+and avoid pre-creating empty cache/LinkKey files.
+Log each storage write attempt with the target path, payload size and
+whether the helper skipped it as unchanged or performed a write.
+
+Upstream-Status: Pending
+
+diff --git a/src/adapter.c b/src/adapter.c
+index e9139b3..2f6acfa 100644
+--- a/src/adapter.c
++++ b/src/adapter.c
+@@ -583,7 +583,7 @@ static void store_adapter_info(struct btd_adapter *adapter)
+ 	create_file(filename, 0600);
+ 
+ 	str = g_key_file_to_data(key_file, &length, NULL);
+-	if (!g_file_set_contents(filename, str, length, &gerr)) {
++	if (!btd_file_set_contents(filename, str, length, &gerr)) {
+ 		error("Unable set contents for %s: (%s)", filename,
+ 								gerr->message);
+ 		g_error_free(gerr);
+@@ -4190,7 +4190,7 @@ static int generate_and_write_irk(uint8_t *irk, GKeyFile *key_file,
+ 								str_irk_out);
+ 	create_file(filename, S_IRUSR | S_IWUSR);
+ 	str = g_key_file_to_data(key_file, &length, NULL);
+-	if (!g_file_set_contents(filename, str, length, &gerr)) {
++	if (!btd_file_set_contents(filename, str, length, &gerr)) {
+ 		error("Unable set contents for %s: (%s)", filename,
+ 								gerr->message);
+ 		g_error_free(gerr);
+@@ -5960,18 +5960,18 @@ static void convert_names_entry(char *key, char *value, void *user_data)
+ 		return;
+ 
+ 	create_filename(filename, PATH_MAX, "/%s/cache/%s", address, str);
+-	create_file(filename, 0600);
+ 
+ 	key_file = g_key_file_new();
+ 	if (!g_key_file_load_from_file(key_file, filename, 0, &gerr)) {
+-		error("Unable to load key file from %s: (%s)", filename,
++		if (!g_error_matches(gerr, G_FILE_ERROR, G_FILE_ERROR_NOENT))
++			error("Unable to load key file from %s: (%s)", filename,
+ 								gerr->message);
+ 		g_clear_error(&gerr);
+ 	}
+ 	g_key_file_set_string(key_file, "General", "Name", value);
+ 
+ 	data = g_key_file_to_data(key_file, &length, NULL);
+-	if (!g_file_set_contents(filename, data, length, &gerr)) {
++	if (!btd_file_set_contents(filename, data, length, &gerr)) {
+ 		error("Unable set contents for %s: (%s)", filename,
+ 								gerr->message);
+ 		g_error_free(gerr);
+@@ -6209,7 +6209,7 @@ static void convert_entry(char *key, char *value, void *user_data)
+ 	data = g_key_file_to_data(key_file, &length, NULL);
+ 	if (length > 0) {
+ 		create_file(filename, 0600);
+-		if (!g_file_set_contents(filename, data, length, &gerr)) {
++		if (!btd_file_set_contents(filename, data, length, &gerr)) {
+ 			error("Unable set contents for %s: (%s)", filename,
+ 								gerr->message);
+ 			g_error_free(gerr);
+@@ -6314,7 +6314,7 @@ static void store_sdp_record(char *local, char *peer, int handle, char *value)
+ 	data = g_key_file_to_data(key_file, &length, NULL);
+ 	if (length > 0) {
+ 		create_file(filename, 0600);
+-		if (!g_file_set_contents(filename, data, length, &gerr)) {
++		if (!btd_file_set_contents(filename, data, length, &gerr)) {
+ 			error("Unable set contents for %s: (%s)", filename,
+ 								gerr->message);
+ 			g_error_free(gerr);
+@@ -6397,7 +6397,7 @@ static void convert_sdp_entry(char *key, char *value, void *user_data)
+ 	data = g_key_file_to_data(key_file, &length, NULL);
+ 	if (length > 0) {
+ 		create_file(filename, 0600);
+-		if (!g_file_set_contents(filename, data, length, &gerr)) {
++		if (!btd_file_set_contents(filename, data, length, &gerr)) {
+ 			error("Unable set contents for %s: (%s)", filename,
+ 								gerr->message);
+ 			g_error_free(gerr);
+@@ -6471,7 +6471,7 @@ static void convert_primaries_entry(char *key, char *value, void *user_data)
+ 		goto end;
+ 
+ 	create_file(filename, 0600);
+-	if (!g_file_set_contents(filename, data, length, &gerr)) {
++	if (!btd_file_set_contents(filename, data, length, &gerr)) {
+ 		error("Unable set contents for %s: (%s)", filename,
+ 								gerr->message);
+ 		g_clear_error(&gerr);
+@@ -6496,7 +6496,7 @@ static void convert_primaries_entry(char *key, char *value, void *user_data)
+ 	data = g_key_file_to_data(key_file, &length, NULL);
+ 	if (length > 0) {
+ 		create_file(filename, 0600);
+-		if (!g_file_set_contents(filename, data, length, &gerr)) {
++		if (!btd_file_set_contents(filename, data, length, &gerr)) {
+ 			error("Unable set contents for %s: (%s)", filename,
+ 								gerr->message);
+ 			g_error_free(gerr);
+@@ -6554,7 +6554,7 @@ static void convert_ccc_entry(char *key, char *value, void *user_data)
+ 	data = g_key_file_to_data(key_file, &length, NULL);
+ 	if (length > 0) {
+ 		create_file(filename, 0600);
+-		if (!g_file_set_contents(filename, data, length, &gerr)) {
++		if (!btd_file_set_contents(filename, data, length, &gerr)) {
+ 			error("Unable set contents for %s: (%s)", filename,
+ 								gerr->message);
+ 			g_error_free(gerr);
+@@ -6610,7 +6610,7 @@ static void convert_gatt_entry(char *key, char *value, void *user_data)
+ 	data = g_key_file_to_data(key_file, &length, NULL);
+ 	if (length > 0) {
+ 		create_file(filename, 0600);
+-		if (!g_file_set_contents(filename, data, length, &gerr)) {
++		if (!btd_file_set_contents(filename, data, length, &gerr)) {
+ 			error("Unable set contents for %s: (%s)", filename,
+ 								gerr->message);
+ 			g_error_free(gerr);
+@@ -6664,7 +6664,7 @@ static void convert_proximity_entry(char *key, char *value, void *user_data)
+ 	data = g_key_file_to_data(key_file, &length, NULL);
+ 	if (length > 0) {
+ 		create_file(filename, 0600);
+-		if (!g_file_set_contents(filename, data, length, &gerr)) {
++		if (!btd_file_set_contents(filename, data, length, &gerr)) {
+ 			error("Unable set contents for %s: (%s)", filename,
+ 								gerr->message);
+ 			g_error_free(gerr);
+@@ -6769,7 +6769,7 @@ static void convert_config(struct btd_adapter *adapter, const char *filename,
+ 	create_file(filename, 0600);
+ 
+ 	data = g_key_file_to_data(key_file, &length, NULL);
+-	if (!g_file_set_contents(filename, data, length, &gerr)) {
++	if (!btd_file_set_contents(filename, data, length, &gerr)) {
+ 		error("Unable set contents for %s: (%s)", filename,
+ 								gerr->message);
+ 		g_error_free(gerr);
+@@ -8583,15 +8583,18 @@ static void store_link_key(struct btd_adapter *adapter,
+ 
+ 	create_filename(filename, PATH_MAX, "/%s/%s/info",
+ 			btd_adapter_get_storage_dir(adapter), device_addr);
+-	create_file(filename, 0600);
+ 
+ 	key_file = g_key_file_new();
+ 	if (!g_key_file_load_from_file(key_file, filename, 0, &gerr)) {
+-		error("Unable to load key file from %s: (%s)", filename,
++		if (!g_error_matches(gerr, G_FILE_ERROR, G_FILE_ERROR_NOENT)) {
++			error("Unable to load key file from %s: (%s)", filename,
+ 								gerr->message);
+-		g_error_free(gerr);
+-		g_key_file_free(key_file);
+-		return;
++			g_error_free(gerr);
++			g_key_file_free(key_file);
++			return;
++		}
++
++		g_clear_error(&gerr);
+ 	}
+ 
+ 	for (i = 0; i < 16; i++)
+@@ -8603,7 +8606,7 @@ static void store_link_key(struct btd_adapter *adapter,
+ 	g_key_file_set_integer(key_file, "LinkKey", "PINLength", pin_length);
+ 
+ 	str = g_key_file_to_data(key_file, &length, NULL);
+-	if (!g_file_set_contents(filename, str, length, &gerr)) {
++	if (!btd_file_set_contents(filename, str, length, &gerr)) {
+ 		error("Unable set contents for %s: (%s)", filename,
+ 								gerr->message);
+ 		g_error_free(gerr);
+@@ -8700,7 +8703,7 @@ static void store_ltk_group(struct btd_adapter *adapter, const bdaddr_t *peer,
+ 	create_file(filename, 0600);
+ 
+ 	str = g_key_file_to_data(key_file, &length, NULL);
+-	if (!g_file_set_contents(filename, str, length, &gerr)) {
++	if (!btd_file_set_contents(filename, str, length, &gerr)) {
+ 		error("Unable set contents for %s: (%s)", filename,
+ 								gerr->message);
+ 		g_error_free(gerr);
+@@ -8861,7 +8864,7 @@ static void store_csrk(struct btd_adapter *adapter, const bdaddr_t *peer,
+ 	create_file(filename, 0600);
+ 
+ 	str = g_key_file_to_data(key_file, &length, NULL);
+-	if (!g_file_set_contents(filename, str, length, &gerr)) {
++	if (!btd_file_set_contents(filename, str, length, &gerr)) {
+ 		error("Unable set contents for %s: (%s)", filename,
+ 								gerr->message);
+ 		g_error_free(gerr);
+@@ -8940,7 +8943,7 @@ static void store_irk(struct btd_adapter *adapter, const bdaddr_t *peer,
+ 	g_key_file_set_string(key_file, "IdentityResolvingKey", "Key", str);
+ 
+ 	store_data = g_key_file_to_data(key_file, &length, NULL);
+-	if (!g_file_set_contents(filename, store_data, length, &gerr)) {
++	if (!btd_file_set_contents(filename, store_data, length, &gerr)) {
+ 		error("Unable set contents for %s: (%s)", filename,
+ 								gerr->message);
+ 		g_error_free(gerr);
+@@ -9041,7 +9044,7 @@ static void store_conn_param(struct btd_adapter *adapter, const bdaddr_t *peer,
+ 	create_file(filename, 0600);
+ 
+ 	store_data = g_key_file_to_data(key_file, &length, NULL);
+-	if (!g_file_set_contents(filename, store_data, length, &gerr)) {
++	if (!btd_file_set_contents(filename, store_data, length, &gerr)) {
+ 		error("Unable set contents for %s: (%s)", filename,
+ 								gerr->message);
+ 		g_error_free(gerr);
+@@ -9698,7 +9701,7 @@ static void remove_keys(struct btd_adapter *adapter,
+ 	}
+ 
+ 	str = g_key_file_to_data(key_file, &length, NULL);
+-	if (!g_file_set_contents(filename, str, length, &gerr)) {
++	if (!btd_file_set_contents(filename, str, length, &gerr)) {
+ 		error("Unable set contents for %s: (%s)", filename,
+ 								gerr->message);
+ 		g_error_free(gerr);
+@@ -9844,7 +9847,7 @@ static bool get_static_addr(struct btd_adapter *adapter)
+ 						(const char **)addrs, len);
+ 
+ 	str = g_key_file_to_data(file, &len, NULL);
+-	if (!g_file_set_contents(filename, str, len, &gerr)) {
++	if (!btd_file_set_contents(filename, str, len, &gerr)) {
+ 		error("Unable set contents for %s: (%s)",
+ 					filename, gerr->message);
+ 		g_error_free(gerr);
+diff --git a/src/device.c b/src/device.c
+index 17bcfbc..139e24a 100644
+--- a/src/device.c
++++ b/src/device.c
+@@ -530,7 +530,7 @@ static gboolean store_device_info_cb(gpointer user_data)
+ 	}
+ 
+ 	str = g_key_file_to_data(key_file, &length, NULL);
+-	if (!g_file_set_contents(filename, str, length, &gerr)) {
++	if (!btd_file_set_contents(filename, str, length, &gerr)) {
+ 		error("Unable set contents for %s: (%s)", filename,
+ 								gerr->message);
+ 		g_error_free(gerr);
+@@ -592,11 +592,11 @@ void device_store_cached_name(struct btd_device *dev, const char *name)
+ 	ba2str(&dev->bdaddr, d_addr);
+ 	create_filename(filename, PATH_MAX, "/%s/cache/%s",
+ 			btd_adapter_get_storage_dir(dev->adapter), d_addr);
+-	create_file(filename, 0600);
+ 
+ 	key_file = g_key_file_new();
+ 	if (!g_key_file_load_from_file(key_file, filename, 0, &gerr)) {
+-		error("Unable to load key file from %s: (%s)", filename,
++		if (!g_error_matches(gerr, G_FILE_ERROR, G_FILE_ERROR_NOENT))
++			error("Unable to load key file from %s: (%s)", filename,
+ 								gerr->message);
+ 		g_clear_error(&gerr);
+ 	}
+@@ -608,7 +608,7 @@ void device_store_cached_name(struct btd_device *dev, const char *name)
+ 	data = g_key_file_to_data(key_file, &length, NULL);
+ 
+ 	if ((length != length_old) || (memcmp(data, data_old, length))) {
+-		if (!g_file_set_contents(filename, data, length, &gerr)) {
++		if (!btd_file_set_contents(filename, data, length, &gerr)) {
+ 			error("Unable set contents for %s: (%s)", filename,
+ 								gerr->message);
+ 			g_clear_error(&gerr);
+@@ -641,11 +641,11 @@ static void device_store_cached_name_resolve(struct btd_device *dev)
+ 	ba2str(&dev->bdaddr, d_addr);
+ 	create_filename(filename, PATH_MAX, "/%s/cache/%s",
+ 			btd_adapter_get_storage_dir(dev->adapter), d_addr);
+-	create_file(filename, 0600);
+ 
+ 	key_file = g_key_file_new();
+ 	if (!g_key_file_load_from_file(key_file, filename, 0, &gerr)) {
+-		error("Unable to load key file from %s: (%s)", filename,
++		if (!g_error_matches(gerr, G_FILE_ERROR, G_FILE_ERROR_NOENT))
++			error("Unable to load key file from %s: (%s)", filename,
+ 								gerr->message);
+ 		g_clear_error(&gerr);
+ 	}
+@@ -660,7 +660,7 @@ static void device_store_cached_name_resolve(struct btd_device *dev)
+ 	data = g_key_file_to_data(key_file, &length, NULL);
+ 
+ 	if ((length != length_old) || (memcmp(data, data_old, length))) {
+-		if (!g_file_set_contents(filename, data, length, &gerr)) {
++		if (!btd_file_set_contents(filename, data, length, &gerr)) {
+ 			error("Unable set contents for %s: (%s)", filename,
+ 								gerr->message);
+ 			g_error_free(gerr);
+@@ -2717,7 +2717,7 @@ static void store_services(struct btd_device *device)
+ 	data = g_key_file_to_data(key_file, &length, NULL);
+ 	if (length > 0) {
+ 		create_file(filename, 0600);
+-		if (!g_file_set_contents(filename, data, length, &gerr)) {
++		if (!btd_file_set_contents(filename, data, length, &gerr)) {
+ 			error("Unable set contents for %s: (%s)", filename,
+ 								gerr->message);
+ 			g_error_free(gerr);
+@@ -3618,7 +3618,7 @@ static void convert_info(struct btd_device *device, GKeyFile *key_file)
+ 			device_addr);
+ 
+ 	str = g_key_file_to_data(key_file, &length, NULL);
+-	if (!g_file_set_contents(filename, str, length, &gerr)) {
++	if (!btd_file_set_contents(filename, str, length, &gerr)) {
+ 		error("Unable set contents for %s: (%s)", filename,
+ 								gerr->message);
+ 		g_error_free(gerr);
+@@ -4644,7 +4644,7 @@ static void device_remove_stored(struct btd_device *device)
+ 	data = g_key_file_to_data(key_file, &length, NULL);
+ 	if (length > 0) {
+ 		create_file(filename, 0600);
+-		if (!g_file_set_contents(filename, data, length, &gerr)) {
++		if (!btd_file_set_contents(filename, data, length, &gerr)) {
+ 			error("Unable set contents for %s: (%s)", filename,
+ 								gerr->message);
+ 			g_error_free(gerr);
+@@ -5127,7 +5127,7 @@ next:
+ 	if (sdp_key_file) {
+ 		data = g_key_file_to_data(sdp_key_file, &length, NULL);
+ 		if (length > 0) {
+-			if (!g_file_set_contents(sdp_file, data, length,
++			if (!btd_file_set_contents(sdp_file, data, length,
+ 								&gerr)) {
+ 				error("Unable set contents for %s: (%s)",
+ 						sdp_file, gerr->message);
+@@ -5142,7 +5142,7 @@ next:
+ 	if (att_key_file) {
+ 		data = g_key_file_to_data(att_key_file, &length, NULL);
+ 		if (length > 0) {
+-			if (!g_file_set_contents(att_file, data, length,
++			if (!btd_file_set_contents(att_file, data, length,
+ 								&gerr)) {
+ 				error("Unable set contents for %s: (%s)",
+ 						att_file, gerr->message);
+@@ -6101,7 +6101,7 @@ void device_store_svc_chng_ccc(struct btd_device *device, uint8_t bdaddr_type,
+ 	create_file(filename, 0600);
+ 
+ 	str = g_key_file_to_data(key_file, &length, NULL);
+-	if (!g_file_set_contents(filename, str, length, &gerr)) {
++	if (!btd_file_set_contents(filename, str, length, &gerr)) {
+ 		error("Unable set contents for %s: (%s)", filename,
+ 								gerr->message);
+ 		g_error_free(gerr);
+diff --git a/src/textfile.c b/src/textfile.c
+index a5b9e73..2414381 100644
+--- a/src/textfile.c
++++ b/src/textfile.c
+@@ -26,6 +26,10 @@
+ #include <sys/mman.h>
+ #include <sys/param.h>
+ 
++#include <glib.h>
++
++#include "src/log.h"
++
+ #include "textfile.h"
+ 
+ int create_filename(char *str, size_t size, const char *fmt, ...)
+@@ -113,6 +116,136 @@ int create_file(const char *filename, const mode_t mode)
+ 	return 0;
+ }
+ 
++gboolean btd_file_set_contents(const char *filename, const char *contents,
++					gssize length, GError **error)
++{
++	char *old_contents = NULL;
++	GError *read_error = NULL;
++	gsize old_length = 0;
++	char dirname[PATH_MAX], tmpname[PATH_MAX];
++	const char *base;
++	struct stat st;
++	mode_t mode = 0600;
++	int dir_fd = -1, fd = -1, err;
++	ssize_t written;
++	size_t pos = 0;
++
++	if (length < 0)
++		length = strlen(contents);
++
++	if (g_file_get_contents(filename, &old_contents, &old_length,
++							&read_error)) {
++		if (old_length == (gsize) length &&
++				!memcmp(old_contents, contents, length)) {
++			info("storage write path=%s payload_size=%lld dirty=false",
++						filename, (long long) length);
++			g_free(old_contents);
++			return TRUE;
++		}
++
++		g_free(old_contents);
++	} else if (!g_error_matches(read_error, G_FILE_ERROR,
++						G_FILE_ERROR_NOENT)) {
++		g_propagate_error(error, read_error);
++		return FALSE;
++	} else {
++		g_clear_error(&read_error);
++	}
++
++	info("storage write path=%s payload_size=%lld dirty=true",
++						filename, (long long) length);
++
++	create_dirs(filename, 0700);
++
++	base = strrchr(filename, '/');
++	if (!base) {
++		strcpy(dirname, ".");
++		base = filename;
++	} else {
++		size_t dir_len = base - filename;
++
++		if (dir_len >= sizeof(dirname)) {
++			g_set_error_literal(error, G_FILE_ERROR,
++					G_FILE_ERROR_NAMETOOLONG,
++					"Filename is too long");
++			return FALSE;
++		}
++
++		memcpy(dirname, filename, dir_len);
++		dirname[dir_len] = '\0';
++		base++;
++	}
++
++	if (snprintf(tmpname, sizeof(tmpname), "%s/.%s.XXXXXX",
++				dirname, base) >= (int) sizeof(tmpname)) {
++		g_set_error_literal(error, G_FILE_ERROR,
++				G_FILE_ERROR_NAMETOOLONG, "Filename is too long");
++		return FALSE;
++	}
++
++	fd = mkstemp(tmpname);
++	if (fd < 0)
++		goto fail;
++
++	if (!stat(filename, &st))
++		mode = st.st_mode & 0777;
++
++	if (fchmod(fd, mode) < 0)
++		goto fail;
++
++	while (pos < (size_t) length) {
++		written = write(fd, contents + pos, length - pos);
++		if (written < 0) {
++			if (errno == EINTR)
++				continue;
++			goto fail;
++		}
++		if (!written) {
++			errno = EIO;
++			goto fail;
++		}
++
++		pos += written;
++	}
++
++	if (fsync(fd) < 0)
++		goto fail;
++
++	if (close(fd) < 0) {
++		fd = -1;
++		goto fail;
++	}
++	fd = -1;
++
++	if (rename(tmpname, filename) < 0)
++		goto fail;
++
++	dir_fd = open(dirname, O_RDONLY | O_DIRECTORY);
++	if (dir_fd >= 0) {
++		if (fsync(dir_fd) < 0) {
++			err = errno;
++			close(dir_fd);
++			g_set_error(error, G_FILE_ERROR,
++					g_file_error_from_errno(err),
++					"Failed to sync %s: %s",
++					dirname, strerror(err));
++			return FALSE;
++		}
++		close(dir_fd);
++	}
++
++	return TRUE;
++
++fail:
++	err = errno;
++	if (fd >= 0)
++		close(fd);
++	unlink(tmpname);
++	g_set_error(error, G_FILE_ERROR, g_file_error_from_errno(err),
++				"Failed to write %s: %s", filename, strerror(err));
++	return FALSE;
++}
++
+ int create_name(char *buf, size_t size, const char *address, const char *name)
+ {
+ 	return create_filename(buf, size, "/%s/%s", address, name);
+diff --git a/src/textfile.h b/src/textfile.h
+index 4ecd5ed..84f5c7f 100644
+--- a/src/textfile.h
++++ b/src/textfile.h
+@@ -8,9 +8,13 @@
+  *
+  */
+ 
++#include <glib.h>
++
+ int create_filename(char *str, size_t size, const char *fmt, ...)
+ 					__attribute__((format(printf, 3, 4)));
+ int create_file(const char *filename, const mode_t mode);
++gboolean btd_file_set_contents(const char *filename, const char *contents,
++					gssize length, GError **error);
+ int create_name(char *buf, size_t size, const char *address, const char *name);
+ 
+ int textfile_put(const char *pathname, const char *key, const char *value);

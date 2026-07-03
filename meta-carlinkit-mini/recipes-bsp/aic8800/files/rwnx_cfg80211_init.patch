@@ -1,0 +1,19 @@
+---
+ aic8800_fdrv/rwnx_main.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/aic8800_fdrv/rwnx_main.c b/aic8800_fdrv/rwnx_main.c
+index 4773735..f1ca5f9 100644
+--- a/aic8800_fdrv/rwnx_main.c
++++ b/aic8800_fdrv/rwnx_main.c
+@@ -5861,7 +5861,7 @@ int rwnx_cfg80211_init(struct rwnx_plat *rwnx_plat, void **platform_data)
+ 
+ 	/* Add an initial station interface */
+ 	vif = rwnx_interface_add(rwnx_hw, "wlan%d", NET_NAME_UNKNOWN,
+-								NL80211_IFTYPE_STATION, NULL);
++								NL80211_IFTYPE_AP, NULL);
+ 
+ #ifdef CONFIG_RWNX_MON_DATA
+     /* Add an initial station interface */
+-- 
+2.54.0

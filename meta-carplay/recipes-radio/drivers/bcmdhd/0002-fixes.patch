@@ -1,0 +1,23 @@
+Date: Thu, 27 Nov 2025 17:25:20 +0100
+Subject: [PATCH] fixes
+
+---
+ wl_cfg80211.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/wl_cfg80211.c b/wl_cfg80211.c
+index 0ea8e2d..08e7b79 100755
+--- a/wl_cfg80211.c
++++ b/wl_cfg80211.c
+@@ -1017,7 +1017,7 @@ wl_sdo_proto_t wl_sdo_protos [] = {
+ #ifdef WL_WPS_SYNC
+ static void wl_init_wps_reauth_sm(struct bcm_cfg80211 *cfg);
+ static void wl_deinit_wps_reauth_sm(struct bcm_cfg80211 *cfg);
+-static void wl_wps_reauth_timeout(void *data);
++static void wl_wps_reauth_timeout(unsigned long data);
+ static s32 wl_get_free_wps_inst(struct bcm_cfg80211 *cfg);
+ static s32 wl_get_wps_inst_match(struct bcm_cfg80211 *cfg, struct net_device *ndev);
+ static s32 wl_wps_session_add(struct net_device *ndev, u16 mode, u8 *peer_mac);
+-- 
+2.51.1
+

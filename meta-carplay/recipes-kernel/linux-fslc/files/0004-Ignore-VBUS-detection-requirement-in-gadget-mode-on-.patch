@@ -1,0 +1,20 @@
+Date: Sun, 24 Aug 2025 11:13:45 +0200
+Subject: [PATCH] Ignore VBUS detection requirement in gadget mode on IMX6UL
+ platform
+
+This is required to function as a CarPlay headunit, because iPhone is a USB host but
+it will never turn it's VBUS on because it would like to be charged by the headunit if possible.
+
+diff --git a/drivers/usb/chipidea/ci_hdrc_imx.c b/drivers/usb/chipidea/ci_hdrc_imx.c
+index c64ab0e07..f4d0bc734 100644
+--- a/drivers/usb/chipidea/ci_hdrc_imx.c
++++ b/drivers/usb/chipidea/ci_hdrc_imx.c
+@@ -59,7 +59,7 @@ static const struct ci_hdrc_imx_platform_flag imx6sx_usb_data = {
+ static const struct ci_hdrc_imx_platform_flag imx6ul_usb_data = {
+ 	.flags = CI_HDRC_SUPPORTS_RUNTIME_PM |
+ 		CI_HDRC_TURN_VBUS_EARLY_ON |
+-		CI_HDRC_DISABLE_HOST_STREAMING,
++		CI_HDRC_DISABLE_HOST_STREAMING | CI_HDRC_FORCE_VBUS_ACTIVE_ALWAYS,
+ };
+ 
+ static const struct ci_hdrc_imx_platform_flag imx6ul_usb_data = {

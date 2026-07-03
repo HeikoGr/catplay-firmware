@@ -1,0 +1,29 @@
+Date: Sun, 28 Sep 2025 19:27:20 +0200
+Subject: [PATCH] Add optimization flags for Ingenic X1600
+
+---
+ configure | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/configure b/configure
+index 732de59292..eee1ec91bd 100755
+--- a/configure
++++ b/configure
+@@ -5516,6 +5516,14 @@ elif enabled mips; then
+         cpuflags="-march=$cpu"
+ 
+         case $cpu in
++            ingenic-x1600)
++                enable mips32r2
++                enable mips32r5
++                enable mipsdsp
++                enable mipsdspr2
++                enable mipsfpu
++                cpuflags="-march=mips32r5 -mdsp -mdspr2"
++            ;;
+             # General ISA levels
+             mips1|mips3)
+             ;;
+-- 
+2.51.0
+

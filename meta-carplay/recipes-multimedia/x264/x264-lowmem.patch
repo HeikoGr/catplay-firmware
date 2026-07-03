@@ -1,0 +1,1239 @@
+Date: Sat, 14 Mar 2026 23:03:19 +0100
+Subject: [PATCH] x264: reduce memory usage for 64MB ram devices encoding keyframes-only
+Upstream-Status: Inappropriate
+
+diff --git a/.gitignore b/.gitignore
+index 5a2f7df8..67e9429d 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -49,3 +49,4 @@ dataDec.txt
+ log.dec
+ common/oclobj.h
+ x264_lookahead.clbin
++/example
+\ No newline at end of file
+diff --git a/Makefile b/Makefile
+index 2d95b38f..e1829396 100644
+--- a/Makefile
++++ b/Makefile
+@@ -10,6 +10,10 @@ vpath %.rc $(SRCPATH)
+ vpath %.manifest $(SRCPATH)
+ 
+ CFLAGS += $(CFLAGSPROF)
++ifeq ($(X264_LOW_MEMORY_BUILD),1)
++CFLAGS += -DX264_LOW_MEMORY_NO_OPENCL=1
++CFLAGS += -DX264_API_8BIT_ONLY=1
++endif
+ LDFLAGS += $(LDFLAGSPROF)
+ 
+ GENERATED =
+@@ -54,6 +58,8 @@ OBJCHK =
+ OBJCHK_8 =
+ OBJCHK_10 =
+ OBJEXAMPLE =
++OBJEXAMPLE_TRACE = common/base-example.o
++LIBX264EXAMPLE = libx264-example.a
+ 
+ CONFIG := $(shell cat config.h)
+ 
+@@ -302,6 +308,11 @@ $(LIBX264): $(OBJS) $(OBJASM)
+ 	$(AR)$@ $(OBJS) $(OBJASM)
+ 	$(if $(RANLIB), $(RANLIB) $@)
+ 
++$(LIBX264EXAMPLE): $(filter-out common/base.o,$(OBJS)) $(OBJASM) $(OBJEXAMPLE_TRACE)
++	rm -f $(LIBX264EXAMPLE)
++	$(AR)$@ $(filter-out common/base.o,$(OBJS)) $(OBJASM) $(OBJEXAMPLE_TRACE)
++	$(if $(RANLIB), $(RANLIB) $@)
++
+ $(SONAME): $(OBJS) $(OBJASM) $(OBJSO)
+ 	$(LD)$@ $(OBJS) $(OBJASM) $(OBJSO) $(SOFLAGS) $(LDFLAGS)
+ 
+@@ -324,15 +335,19 @@ checkasm8$(EXE): $(OBJCHK) $(OBJCHK_8) $(LIBX264)
+ checkasm10$(EXE): $(OBJCHK) $(OBJCHK_10) $(LIBX264)
+ 	$(LD)$@ $(OBJCHK) $(OBJCHK_10) $(LIBX264) $(LDFLAGS)
+ 
+-example$(EXE): $(OBJEXAMPLE) $(LIBX264)
+-	$(LD)$@ $(OBJEXAMPLE) $(LIBX264) $(LDFLAGS)
++example$(EXE): $(OBJEXAMPLE) $(LIBX264EXAMPLE)
++	$(LD)$@ $(OBJEXAMPLE) $(LIBX264EXAMPLE) -lpng -rdynamic $(LDFLAGS)
+ 
+ $(OBJS) $(OBJSO): CFLAGS += $(CFLAGSSO)
+ $(OBJCLI): CFLAGS += $(CFLAGSCLI)
+ 
+-ALLOBJS = $(OBJS) $(OBJASM) $(OBJSO) $(OBJCLI) $(OBJCHK) $(OBJCHK_8) $(OBJCHK_10) $(OBJEXAMPLE)
++ALLOBJS = $(OBJS) $(OBJASM) $(OBJSO) $(OBJCLI) $(OBJCHK) $(OBJCHK_8) $(OBJCHK_10) $(OBJEXAMPLE) $(OBJEXAMPLE_TRACE)
+ $(ALLOBJS): $(GENERATED)
+ 
++common/base-example.o: common/base.c
++	$(DEPCMD)
++	$(CC) $(CFLAGS) -DX264_MALLOC_TRACE=1 -c $< -o $@ $(DEPFLAGS)
++
+ %.o: %.c
+ 	$(DEPCMD)
+ 	$(CC) $(CFLAGS) -c $< $(CC_O) $(DEPFLAGS)
+@@ -426,7 +441,7 @@ clean:
+ 	rm -f $(OBJS) $(OBJASM) $(OBJCLI) $(OBJSO) $(GENERATED) TAGS
+ 	rm -f $(SONAME) *.a *.lib *.exp *.pdb x264$(EXE) x264_lookahead.clbin
+ 	rm -f checkasm8$(EXE) checkasm10$(EXE) $(OBJCHK) $(OBJCHK_8) $(OBJCHK_10)
+-	rm -f example$(EXE) $(OBJEXAMPLE)
++	rm -f example$(EXE) $(OBJEXAMPLE) $(OBJEXAMPLE_TRACE)
+ 	rm -f $(OBJPROF:%.o=%.gcda) $(OBJPROF:%.o=%.gcno) *.dyn pgopti.dpi pgopti.dpi.lock *.pgd *.pgc
+ 	rm -f $(ALLOBJS:%.o=%.d)
+ 
+diff --git a/common/base.c b/common/base.c
+index 34277277..2fb8254e 100644
+--- a/common/base.c
++++ b/common/base.c
+@@ -27,6 +27,7 @@
+ #include "base.h"
+ 
+ #include <ctype.h>
++#include <errno.h>
+ 
+ #if HAVE_MALLOC_H
+ #include <malloc.h>
+@@ -34,9 +35,87 @@
+ #if HAVE_THP
+ #include <sys/mman.h>
+ #endif
++#if defined(X264_MALLOC_TRACE) && (defined(__GLIBC__) || defined(__linux__))
++#include <execinfo.h>
++#include <unistd.h>
++#endif
+ 
+ #define X264_ISDIGIT(x) isdigit((unsigned char)(x))
+ 
++#if defined(X264_MALLOC_TRACE) && (defined(__GLIBC__) || defined(__linux__))
++static int x264_malloc_trace_threshold( void )
++{
++    static int initialized = 0;
++    static int threshold = -1;
++    if( !initialized )
++    {
++        const char *env = getenv( "X264_TRACE_MALLOC_MIN" );
++        threshold = env && *env ? atoi( env ) : 131072;
++        initialized = 1;
++    }
++    return threshold;
++}
++
++static const char *x264_malloc_trace_exe( void )
++{
++    static int initialized = 0;
++    static char exe_path[PATH_MAX];
++    if( !initialized )
++    {
++        ssize_t len = readlink( "/proc/self/exe", exe_path, sizeof( exe_path ) - 1 );
++        if( len > 0 )
++            exe_path[len] = '\0';
++        else
++            exe_path[0] = '\0';
++        initialized = 1;
++    }
++    return exe_path;
++}
++
++static void x264_trace_large_malloc_addr2line( void *addr )
++{
++    const char *exe = x264_malloc_trace_exe();
++    if( !exe[0] )
++        return;
++
++    char cmd[PATH_MAX + 128];
++    snprintf( cmd, sizeof( cmd ), "addr2line -f -C -e '%s' %p", exe, addr );
++
++    FILE *fp = popen( cmd, "r" );
++    if( !fp )
++        return;
++
++    char line[512];
++    while( fgets( line, sizeof( line ), fp ) )
++        dprintf( STDERR_FILENO, "x264 [debug]:     %s", line );
++
++    pclose( fp );
++}
++
++static void x264_trace_large_malloc( int64_t i_size, void *ptr )
++{
++    int threshold = x264_malloc_trace_threshold();
++    if( threshold <= 0 || i_size < threshold )
++        return;
++
++    void *frames[32];
++    int frame_count = backtrace( frames, ARRAY_ELEMS( frames ) );
++    dprintf( STDERR_FILENO, "x264 [debug]: large malloc size=%"PRId64" ptr=%p threshold=%d\n",
++             i_size, ptr, threshold );
++    for( int i = 0; i < frame_count; i++ )
++    {
++        dprintf( STDERR_FILENO, "x264 [debug]:   frame[%d] %p\n", i, frames[i] );
++        x264_trace_large_malloc_addr2line( frames[i] );
++    }
++}
++#else
++static void x264_trace_large_malloc( int64_t i_size, void *ptr )
++{
++    (void)i_size;
++    (void)ptr;
++}
++#endif
++
+ /****************************************************************************
+  * x264_reduce_fraction:
+  ****************************************************************************/
+@@ -138,6 +217,8 @@ void *x264_malloc( int64_t i_size )
+ #endif
+     if( !align_buf )
+         x264_log_internal( X264_LOG_ERROR, "malloc of size %"PRId64" failed\n", i_size );
++    else
++        x264_trace_large_malloc( i_size, align_buf );
+     return align_buf;
+ #undef HUGE_PAGE_SIZE
+ #undef HUGE_PAGE_THRESHOLD
+diff --git a/common/frame.c b/common/frame.c
+index 7f19e1bd..34dc938a 100644
+--- a/common/frame.c
++++ b/common/frame.c
+@@ -56,13 +56,29 @@ static int frame_internal_csp( int external_csp )
+     return X264_CSP_NONE;
+ }
+ 
++static int x264_lowmem_allintra_only( x264_t *h )
++{
++    return h->param.i_keyint_max == 1
++        && h->param.i_keyint_min == 1
++        && !h->param.i_bframe
++        && h->param.i_frame_reference <= 1
++        && !h->param.i_sync_lookahead
++        && !h->param.rc.i_lookahead
++        && !h->param.analyse.i_weighted_pred
++        && !h->param.analyse.b_psnr
++        && !h->param.analyse.b_ssim
++        && !PARAM_INTERLACED
++        && !h->param.b_intra_refresh;
++}
++
+ static x264_frame_t *frame_new( x264_t *h, int b_fdec )
+ {
+     x264_frame_t *frame;
++    int b_lowmem_allintra_fenc = !b_fdec && x264_lowmem_allintra_only( h );
+     int i_csp = frame_internal_csp( h->param.i_csp );
+     int i_mb_count = h->mb.i_mb_count;
+     int i_stride, i_width, i_lines, luma_plane_count;
+-    int i_padv = PADV << PARAM_INTERLACED;
++    int i_padv = b_lowmem_allintra_fenc ? 0 : (PADV << PARAM_INTERLACED);
+     int align = NATIVE_ALIGN / SIZEOF_PIXEL;
+ #if ARCH_X86 || ARCH_X86_64
+     if( h->param.cpu&X264_CPU_CACHELINE_64 || h->param.cpu&X264_CPU_AVX512 )
+@@ -136,6 +152,7 @@ static x264_frame_t *frame_new( x264_t *h, int b_fdec )
+     frame->i_frame_num = -1;
+     frame->i_lines_completed = -1;
+     frame->b_fdec = b_fdec;
++    frame->b_direct_input = b_lowmem_allintra_fenc;
+     frame->i_pic_struct = PIC_STRUCT_AUTO;
+     frame->i_field_cnt = -1;
+     frame->i_duration =
+@@ -147,7 +164,7 @@ static x264_frame_t *frame_new( x264_t *h, int b_fdec )
+ 
+     frame->orig = frame;
+ 
+-    if( i_csp == X264_CSP_NV12 || i_csp == X264_CSP_NV16 )
++    if( !b_lowmem_allintra_fenc && (i_csp == X264_CSP_NV12 || i_csp == X264_CSP_NV16) )
+     {
+         int chroma_padv = i_padv >> (i_csp == X264_CSP_NV12);
+         int chroma_plane_size = (frame->i_stride[1] * (frame->i_lines[1] + 2*chroma_padv));
+@@ -161,6 +178,8 @@ static x264_frame_t *frame_new( x264_t *h, int b_fdec )
+ 
+     for( int p = 0; p < luma_plane_count; p++ )
+     {
++        if( b_lowmem_allintra_fenc )
++            continue;
+         int64_t luma_plane_size = align_plane_size( frame->i_stride[p] * (frame->i_lines[p] + 2*i_padv), disalign );
+         if( h->param.analyse.i_subpel_refine && b_fdec )
+             luma_plane_size *= 4;
+@@ -177,18 +196,29 @@ static x264_frame_t *frame_new( x264_t *h, int b_fdec )
+     {
+         PREALLOC( frame->mb_type, i_mb_count * sizeof(int8_t) );
+         PREALLOC( frame->mb_partition, i_mb_count * sizeof(uint8_t) );
+-        PREALLOC( frame->mv[0], 2*16 * i_mb_count * sizeof(int16_t) );
+-        PREALLOC( frame->mv16x16, 2*(i_mb_count+1) * sizeof(int16_t) );
+-        PREALLOC( frame->ref[0], 4 * i_mb_count * sizeof(int8_t) );
+-        if( h->param.i_bframe )
++        if( x264_lowmem_allintra_only( h ) )
+         {
+-            PREALLOC( frame->mv[1], 2*16 * i_mb_count * sizeof(int16_t) );
+-            PREALLOC( frame->ref[1], 4 * i_mb_count * sizeof(int8_t) );
++            frame->mv[0] = NULL;
++            frame->mv16x16 = NULL;
++            frame->ref[0] = NULL;
++            frame->mv[1] = NULL;
++            frame->ref[1] = NULL;
+         }
+         else
+         {
+-            frame->mv[1]  = NULL;
+-            frame->ref[1] = NULL;
++            PREALLOC( frame->mv[0], 2*16 * i_mb_count * sizeof(int16_t) );
++            PREALLOC( frame->mv16x16, 2*(i_mb_count+1) * sizeof(int16_t) );
++            PREALLOC( frame->ref[0], 4 * i_mb_count * sizeof(int8_t) );
++            if( h->param.i_bframe )
++            {
++                PREALLOC( frame->mv[1], 2*16 * i_mb_count * sizeof(int16_t) );
++                PREALLOC( frame->ref[1], 4 * i_mb_count * sizeof(int8_t) );
++            }
++            else
++            {
++                frame->mv[1]  = NULL;
++                frame->ref[1] = NULL;
++            }
+         }
+         PREALLOC( frame->i_row_bits, i_lines/16 * sizeof(int) );
+         PREALLOC( frame->f_row_qp, i_lines/16 * sizeof(float) );
+@@ -234,7 +264,7 @@ static x264_frame_t *frame_new( x264_t *h, int b_fdec )
+ 
+     PREALLOC_END( frame->base );
+ 
+-    if( i_csp == X264_CSP_NV12 || i_csp == X264_CSP_NV16 )
++    if( !b_lowmem_allintra_fenc && (i_csp == X264_CSP_NV12 || i_csp == X264_CSP_NV16) )
+     {
+         int chroma_padv = i_padv >> (i_csp == X264_CSP_NV12);
+         frame->plane[1] = frame->buffer[1] + frame->i_stride[1] * chroma_padv + PADH_ALIGN;
+@@ -244,6 +274,8 @@ static x264_frame_t *frame_new( x264_t *h, int b_fdec )
+ 
+     for( int p = 0; p < luma_plane_count; p++ )
+     {
++        if( b_lowmem_allintra_fenc )
++            continue;
+         int64_t luma_plane_size = align_plane_size( frame->i_stride[p] * (frame->i_lines[p] + 2*i_padv), disalign );
+         if( h->param.analyse.i_subpel_refine && b_fdec )
+         {
+@@ -266,8 +298,11 @@ static x264_frame_t *frame_new( x264_t *h, int b_fdec )
+ 
+     if( b_fdec )
+     {
+-        M32( frame->mv16x16[0] ) = 0;
+-        frame->mv16x16++;
++        if( frame->mv16x16 )
++        {
++            M32( frame->mv16x16[0] ) = 0;
++            frame->mv16x16++;
++        }
+ 
+         if( h->param.analyse.i_me_method >= X264_ME_ESA )
+             frame->integral = (uint16_t*)frame->buffer[3] + frame->i_stride[0] * i_padv + PADH_ALIGN;
+@@ -298,7 +333,7 @@ static x264_frame_t *frame_new( x264_t *h, int b_fdec )
+     if( x264_pthread_cond_init( &frame->cv, NULL ) )
+         goto fail;
+ 
+-#if HAVE_OPENCL
++#if HAVE_OPENCL && !X264_LOW_MEMORY_NO_OPENCL
+     frame->opencl.ocl = h->opencl.ocl;
+ #endif
+ 
+@@ -332,7 +367,7 @@ void x264_frame_delete( x264_frame_t *frame )
+         }
+         x264_pthread_mutex_destroy( &frame->mutex );
+         x264_pthread_cond_destroy( &frame->cv );
+-#if HAVE_OPENCL
++#if HAVE_OPENCL && !X264_LOW_MEMORY_NO_OPENCL
+         x264_opencl_frame_delete( frame );
+ #endif
+     }
+@@ -407,6 +442,46 @@ int x264_frame_copy_picture( x264_t *h, x264_frame_t *dst, x264_picture_t *src )
+     dst->mb_info    = h->param.analyse.b_mb_info ? src->prop.mb_info : NULL;
+     dst->mb_info_free = h->param.analyse.b_mb_info ? src->prop.mb_info_free : NULL;
+ 
++    if( dst->b_direct_input )
++    {
++        dst->src_csp = i_csp;
++        get_plane_ptr( h, src, (uint8_t **)&dst->src_plane[0], &dst->src_stride[0], 0, 0, 0 );
++        dst->src_stride[0] /= SIZEOF_PIXEL;
++        dst->plane[0] = dst->src_plane[0];
++        dst->filtered[0][0] = dst->plane[0];
++        dst->i_width[0] = h->param.i_width;
++        dst->i_lines[0] = h->param.i_height;
++        dst->i_stride[0] = dst->src_stride[0];
++
++        if( i_csp == X264_CSP_NV12 || i_csp == X264_CSP_NV21 )
++        {
++            get_plane_ptr( h, src, (uint8_t **)&dst->src_plane[1], &dst->src_stride[1], 1, 0, CHROMA_V_SHIFT );
++            dst->src_stride[1] /= SIZEOF_PIXEL;
++            dst->plane[1] = dst->src_plane[1];
++            dst->filtered[1][0] = dst->plane[1];
++        }
++        else if( i_csp == X264_CSP_I420 || i_csp == X264_CSP_YV12 )
++        {
++            int uv_swap = i_csp == X264_CSP_YV12;
++            get_plane_ptr( h, src, (uint8_t **)&dst->src_plane[1], &dst->src_stride[1], uv_swap ? 2 : 1, 1, CHROMA_V_SHIFT );
++            get_plane_ptr( h, src, (uint8_t **)&dst->src_plane[2], &dst->src_stride[2], uv_swap ? 1 : 2, 1, CHROMA_V_SHIFT );
++            dst->src_stride[1] /= SIZEOF_PIXEL;
++            dst->src_stride[2] /= SIZEOF_PIXEL;
++            dst->plane[1] = NULL;
++            dst->filtered[1][0] = NULL;
++        }
++        else
++        {
++            x264_log( h, X264_LOG_ERROR, "Low-memory direct input only supports 4:2:0 input\n" );
++            return -1;
++        }
++
++        dst->i_width[1] = h->param.i_width >> CHROMA_H_SHIFT;
++        dst->i_lines[1] = h->param.i_height >> CHROMA_V_SHIFT;
++        dst->i_stride[1] = dst->src_stride[1];
++        return 0;
++    }
++
+     uint8_t *pix[3];
+     int stride[3];
+     if( i_csp == X264_CSP_YUYV || i_csp == X264_CSP_UYVY )
+diff --git a/common/frame.h b/common/frame.h
+index c66bcc5b..fccb3bd0 100644
+--- a/common/frame.h
++++ b/common/frame.h
+@@ -61,6 +61,7 @@ typedef struct x264_frame
+     int     i_pic_struct;
+     int     b_keyframe;
+     uint8_t b_fdec;
++    uint8_t b_direct_input;
+     uint8_t b_last_minigop_bframe; /* this frame is the last b in a sequence of bframes */
+     uint8_t i_bframes;   /* number of bframes following this nonb in coded order */
+     float   f_qp_avg_rc; /* QPs as decided by ratecontrol */
+@@ -74,6 +75,9 @@ typedef struct x264_frame
+     int     i_stride[3];
+     int     i_width[3];
+     int     i_lines[3];
++    pixel  *src_plane[3];
++    int     src_stride[3];
++    int     src_csp;
+     int     i_stride_lowres;
+     int     i_width_lowres;
+     int     i_lines_lowres;
+diff --git a/common/macroblock.c b/common/macroblock.c
+index 2e91b9bf..5bf3cbc7 100644
+--- a/common/macroblock.c
++++ b/common/macroblock.c
+@@ -435,7 +435,13 @@ void x264_macroblock_slice_init( x264_t *h )
+     h->fdec->i_ref[1] = h->i_ref[1];
+     for( int i = 0; i < h->i_ref[0]; i++ )
+         h->fdec->ref_poc[0][i] = h->fref[0][i]->i_poc;
+-    if( h->sh.i_type == SLICE_TYPE_B )
++    if( h->sh.i_type == SLICE_TYPE_I )
++    {
++        h->mb.mv[0] = h->mb.mv[1] = NULL;
++        h->mb.mvr[0][0] = NULL;
++        h->mb.ref[0] = h->mb.ref[1] = NULL;
++    }
++    else if( h->sh.i_type == SLICE_TYPE_B )
+     {
+         for( int i = 0; i < h->i_ref[1]; i++ )
+             h->fdec->ref_poc[1][i] = h->fref[1][i]->i_poc;
+@@ -550,12 +556,16 @@ void x264_macroblock_thread_init( x264_t *h )
+ 
+ void x264_prefetch_fenc( x264_t *h, x264_frame_t *fenc, int i_mb_x, int i_mb_y )
+ {
+-    int stride_y  = fenc->i_stride[0];
+-    int stride_uv = fenc->i_stride[1];
++    int stride_y  = fenc->b_direct_input ? fenc->src_stride[0] : fenc->i_stride[0];
++    int stride_uv = fenc->b_direct_input ? fenc->src_stride[1] : fenc->i_stride[1];
+     int off_y  = 16 * i_mb_x + 16 * i_mb_y * stride_y;
+     int off_uv = 16 * i_mb_x + (16 * i_mb_y * stride_uv >> CHROMA_V_SHIFT);
+-    h->mc.prefetch_fenc( fenc->plane[0]+off_y, stride_y,
+-                         fenc->plane[1] != NULL ? fenc->plane[1]+off_uv : NULL, stride_uv, i_mb_x );
++    pixel *plane_y = fenc->b_direct_input ? fenc->src_plane[0] : fenc->plane[0];
++    pixel *plane_uv = fenc->b_direct_input && (fenc->src_csp == X264_CSP_NV12 || fenc->src_csp == X264_CSP_NV21)
++                    ? fenc->src_plane[1]
++                    : fenc->plane[1];
++    h->mc.prefetch_fenc( plane_y+off_y, stride_y,
++                         plane_uv != NULL ? plane_uv+off_uv : NULL, stride_uv, i_mb_x );
+ }
+ 
+ NOINLINE void x264_copy_column8( pixel *dst, pixel *src )
+@@ -565,6 +575,89 @@ NOINLINE void x264_copy_column8( pixel *dst, pixel *src )
+         dst[i*FDEC_STRIDE] = src[i*FDEC_STRIDE];
+ }
+ 
++static void x264_lowmem_copy_luma_mb( x264_t *h, int mb_x, int mb_y )
++{
++    pixel *dst = h->mb.pic.p_fenc[0];
++    pixel *src = h->fenc->src_plane[0];
++    int src_stride = h->fenc->src_stride[0];
++    int src_x = 16 * mb_x;
++    int src_y = 16 * mb_y;
++    int valid_w = X264_MIN( 16, h->param.i_width - src_x );
++    int valid_h = X264_MIN( 16, h->param.i_height - src_y );
++
++    for( int y = 0; y < valid_h; y++ )
++    {
++        pixel *src_row = src + (src_y + y) * src_stride + src_x;
++        pixel *dst_row = dst + y * FENC_STRIDE;
++        memcpy( dst_row, src_row, valid_w * SIZEOF_PIXEL );
++        for( int x = valid_w; x < 16; x++ )
++            dst_row[x] = dst_row[valid_w - 1];
++    }
++
++    for( int y = valid_h; y < 16; y++ )
++        memcpy( dst + y * FENC_STRIDE, dst + (valid_h - 1) * FENC_STRIDE, 16 * SIZEOF_PIXEL );
++}
++
++static void x264_lowmem_copy_chroma_mb( x264_t *h, int mb_x, int mb_y )
++{
++    pixel *dst_u = h->mb.pic.p_fenc[1];
++    pixel *dst_v = h->mb.pic.p_fenc[2];
++    int src_x = 8 * mb_x;
++    int src_y = (16 * mb_y) >> CHROMA_V_SHIFT;
++    int valid_w = X264_MIN( 8, (h->param.i_width >> CHROMA_H_SHIFT) - src_x );
++    int valid_h = X264_MIN( 8 >> (CHROMA_V_SHIFT - 1), (h->param.i_height >> CHROMA_V_SHIFT) - src_y );
++
++    if( h->fenc->src_csp == X264_CSP_NV12 || h->fenc->src_csp == X264_CSP_NV21 )
++    {
++        pixel *src_uv = h->fenc->src_plane[1];
++        int src_stride = h->fenc->src_stride[1];
++        int uv_swap = h->fenc->src_csp == X264_CSP_NV21;
++        for( int y = 0; y < valid_h; y++ )
++        {
++            pixel *src_row = src_uv + (src_y + y) * src_stride + src_x * 2;
++            pixel *dst_row_u = dst_u + y * FENC_STRIDE;
++            pixel *dst_row_v = dst_v + y * FENC_STRIDE;
++            for( int x = 0; x < valid_w; x++ )
++            {
++                dst_row_u[x] = src_row[2*x + uv_swap];
++                dst_row_v[x] = src_row[2*x + !uv_swap];
++            }
++            for( int x = valid_w; x < 8; x++ )
++            {
++                dst_row_u[x] = dst_row_u[valid_w - 1];
++                dst_row_v[x] = dst_row_v[valid_w - 1];
++            }
++        }
++    }
++    else
++    {
++        pixel *src_u = h->fenc->src_plane[1];
++        pixel *src_v = h->fenc->src_plane[2];
++        int stride_u = h->fenc->src_stride[1];
++        int stride_v = h->fenc->src_stride[2];
++        for( int y = 0; y < valid_h; y++ )
++        {
++            pixel *src_row_u = src_u + (src_y + y) * stride_u + src_x;
++            pixel *src_row_v = src_v + (src_y + y) * stride_v + src_x;
++            pixel *dst_row_u = dst_u + y * FENC_STRIDE;
++            pixel *dst_row_v = dst_v + y * FENC_STRIDE;
++            memcpy( dst_row_u, src_row_u, valid_w * SIZEOF_PIXEL );
++            memcpy( dst_row_v, src_row_v, valid_w * SIZEOF_PIXEL );
++            for( int x = valid_w; x < 8; x++ )
++            {
++                dst_row_u[x] = dst_row_u[valid_w - 1];
++                dst_row_v[x] = dst_row_v[valid_w - 1];
++            }
++        }
++    }
++
++    for( int y = valid_h; y < 8; y++ )
++    {
++        memcpy( dst_u + y * FENC_STRIDE, dst_u + (valid_h - 1) * FENC_STRIDE, 8 * SIZEOF_PIXEL );
++        memcpy( dst_v + y * FENC_STRIDE, dst_v + (valid_h - 1) * FENC_STRIDE, 8 * SIZEOF_PIXEL );
++    }
++}
++
+ static ALWAYS_INLINE void macroblock_load_pic_pointers( x264_t *h, int mb_x, int mb_y, int i, int b_chroma, int b_mbaff )
+ {
+     int mb_interlaced = b_mbaff && MB_INTERLACED;
+@@ -582,10 +675,25 @@ static ALWAYS_INLINE void macroblock_load_pic_pointers( x264_t *h, int mb_x, int
+     if( mb_interlaced )
+         ref_pix_offset[1] += (1-2*(mb_y&1)) * i_stride;
+     h->mb.pic.i_stride[i] = i_stride2;
+-    h->mb.pic.p_fenc_plane[i] = &h->fenc->plane[i][i_pix_offset];
+-    if( b_chroma )
++    h->mb.pic.p_fenc_plane[i] = h->fenc->b_direct_input ? NULL : &h->fenc->plane[i][i_pix_offset];
++    if( h->fenc->b_direct_input )
++    {
++        if( b_chroma )
++            x264_lowmem_copy_chroma_mb( h, mb_x, mb_y );
++        else
++            x264_lowmem_copy_luma_mb( h, mb_x, mb_y );
++    }
++    else if( b_chroma )
+     {
+         h->mc.load_deinterleave_chroma_fenc( h->mb.pic.p_fenc[1], h->mb.pic.p_fenc_plane[1], i_stride2, height );
++    }
++    else
++    {
++        h->mc.copy[PIXEL_16x16]( h->mb.pic.p_fenc[i], FENC_STRIDE, h->mb.pic.p_fenc_plane[i], i_stride2, 16 );
++    }
++
++    if( b_chroma )
++    {
+         memcpy( h->mb.pic.p_fdec[1]-FDEC_STRIDE, intra_fdec, 8*SIZEOF_PIXEL );
+         memcpy( h->mb.pic.p_fdec[2]-FDEC_STRIDE, intra_fdec+8, 8*SIZEOF_PIXEL );
+         h->mb.pic.p_fdec[1][-FDEC_STRIDE-1] = intra_fdec[-1-8];
+@@ -593,7 +701,6 @@ static ALWAYS_INLINE void macroblock_load_pic_pointers( x264_t *h, int mb_x, int
+     }
+     else
+     {
+-        h->mc.copy[PIXEL_16x16]( h->mb.pic.p_fenc[i], FENC_STRIDE, h->mb.pic.p_fenc_plane[i], i_stride2, 16 );
+         memcpy( h->mb.pic.p_fdec[i]-FDEC_STRIDE, intra_fdec, 24*SIZEOF_PIXEL );
+         h->mb.pic.p_fdec[i][-FDEC_STRIDE-1] = intra_fdec[-1];
+     }
+@@ -1506,33 +1613,36 @@ void x264_macroblock_deblock_strength( x264_t *h )
+             h->mb.cache.non_zero_count[x264_scan8[10] - 1] = nnz[left[1]][left_index_table->nnz[3]];
+         }
+ 
+-        for( int l = 0; l <= (h->sh.i_type == SLICE_TYPE_B); l++ )
++        if( h->sh.i_type != SLICE_TYPE_I )
+         {
+-            int16_t (*mv)[2] = h->mb.mv[l];
+-            int8_t *ref = h->mb.ref[l];
+-
+-            int i8 = x264_scan8[0] - 8;
+-            if( neighbour_changed & MB_TOP )
++            for( int l = 0; l <= (h->sh.i_type == SLICE_TYPE_B); l++ )
+             {
+-                h->mb.cache.ref[l][i8+0] =
+-                h->mb.cache.ref[l][i8+1] = ref[top_8x8 + 0];
+-                h->mb.cache.ref[l][i8+2] =
+-                h->mb.cache.ref[l][i8+3] = ref[top_8x8 + 1];
+-                CP128( h->mb.cache.mv[l][i8], mv[top_4x4] );
+-            }
++                int16_t (*mv)[2] = h->mb.mv[l];
++                int8_t *ref = h->mb.ref[l];
+ 
+-            i8 = x264_scan8[0] - 1;
+-            if( neighbour_changed & MB_LEFT )
+-            {
+-                h->mb.cache.ref[l][i8+0*8] =
+-                h->mb.cache.ref[l][i8+1*8] = ref[h->mb.left_b8[0] + 1 + s8x8*left_index_table->ref[0]];
+-                h->mb.cache.ref[l][i8+2*8] =
+-                h->mb.cache.ref[l][i8+3*8] = ref[h->mb.left_b8[1] + 1 + s8x8*left_index_table->ref[2]];
++                int i8 = x264_scan8[0] - 8;
++                if( neighbour_changed & MB_TOP )
++                {
++                    h->mb.cache.ref[l][i8+0] =
++                    h->mb.cache.ref[l][i8+1] = ref[top_8x8 + 0];
++                    h->mb.cache.ref[l][i8+2] =
++                    h->mb.cache.ref[l][i8+3] = ref[top_8x8 + 1];
++                    CP128( h->mb.cache.mv[l][i8], mv[top_4x4] );
++                }
+ 
+-                CP32( h->mb.cache.mv[l][i8+0*8], mv[h->mb.left_b4[0] + 3 + s4x4*left_index_table->mv[0]] );
+-                CP32( h->mb.cache.mv[l][i8+1*8], mv[h->mb.left_b4[0] + 3 + s4x4*left_index_table->mv[1]] );
+-                CP32( h->mb.cache.mv[l][i8+2*8], mv[h->mb.left_b4[1] + 3 + s4x4*left_index_table->mv[2]] );
+-                CP32( h->mb.cache.mv[l][i8+3*8], mv[h->mb.left_b4[1] + 3 + s4x4*left_index_table->mv[3]] );
++                i8 = x264_scan8[0] - 1;
++                if( neighbour_changed & MB_LEFT )
++                {
++                    h->mb.cache.ref[l][i8+0*8] =
++                    h->mb.cache.ref[l][i8+1*8] = ref[h->mb.left_b8[0] + 1 + s8x8*left_index_table->ref[0]];
++                    h->mb.cache.ref[l][i8+2*8] =
++                    h->mb.cache.ref[l][i8+3*8] = ref[h->mb.left_b8[1] + 1 + s8x8*left_index_table->ref[2]];
++
++                    CP32( h->mb.cache.mv[l][i8+0*8], mv[h->mb.left_b4[0] + 3 + s4x4*left_index_table->mv[0]] );
++                    CP32( h->mb.cache.mv[l][i8+1*8], mv[h->mb.left_b4[0] + 3 + s4x4*left_index_table->mv[1]] );
++                    CP32( h->mb.cache.mv[l][i8+2*8], mv[h->mb.left_b4[1] + 3 + s4x4*left_index_table->mv[2]] );
++                    CP32( h->mb.cache.mv[l][i8+3*8], mv[h->mb.left_b4[1] + 3 + s4x4*left_index_table->mv[3]] );
++                }
+             }
+         }
+     }
+@@ -1923,4 +2033,3 @@ void x264_macroblock_bipred_init( x264_t *h )
+                 }
+             }
+ }
+-
+diff --git a/encoder/api.c b/encoder/api.c
+index da991063..961bb90e 100644
+--- a/encoder/api.c
++++ b/encoder/api.c
+@@ -26,6 +26,10 @@
+ 
+ #include "common/base.h"
+ 
++#ifndef X264_API_8BIT_ONLY
++#define X264_API_8BIT_ONLY 0
++#endif
++
+ /****************************************************************************
+  * global symbols
+  ****************************************************************************/
+@@ -43,6 +47,7 @@ int  x264_8_encoder_maximum_delayed_frames( x264_t * );
+ void x264_8_encoder_intra_refresh( x264_t * );
+ int  x264_8_encoder_invalidate_reference( x264_t *, int64_t pts );
+ 
++#if HAVE_BITDEPTH10 && !X264_API_8BIT_ONLY
+ x264_t *x264_10_encoder_open( x264_param_t *, void * );
+ void x264_10_nal_encode( x264_t *h, uint8_t *dst, x264_nal_t *nal );
+ int  x264_10_encoder_reconfig( x264_t *, x264_param_t * );
+@@ -54,6 +59,7 @@ int  x264_10_encoder_delayed_frames( x264_t * );
+ int  x264_10_encoder_maximum_delayed_frames( x264_t * );
+ void x264_10_encoder_intra_refresh( x264_t * );
+ int  x264_10_encoder_invalidate_reference( x264_t *, int64_t pts );
++#endif
+ 
+ typedef struct x264_api_t
+ {
+@@ -97,7 +103,7 @@ REALIGN_STACK x264_t *x264_encoder_open( x264_param_t *param )
+     }
+     else
+ #endif
+-#if HAVE_BITDEPTH10
++#if HAVE_BITDEPTH10 && !X264_API_8BIT_ONLY
+     if( param->i_bitdepth == 10 )
+     {
+         api->nal_encode = x264_10_nal_encode;
+diff --git a/encoder/encoder.c b/encoder/encoder.c
+index 20e620aa..68628dc7 100644
+--- a/encoder/encoder.c
++++ b/encoder/encoder.c
+@@ -1728,11 +1728,19 @@ x264_t *x264_encoder_open( x264_param_t *param, void *api )
+             : pow( 0.95, h->param.rc.i_qp_constant ) * X264_MAX( 1, h->param.rc.f_ip_factor ) ),
+         1000000, INT_MAX/3
+     );
++    /* Low-latency single-frame use cases can tolerate a smaller starting NAL buffer;
++     * encoder_encapsulate_nals() will grow it on demand. This trades a rare realloc
++     * for lower steady-state RSS on memory-constrained devices. */
++    if( h->param.i_threads == 1
++        && !h->param.i_bframe
++        && !h->param.rc.i_lookahead
++        && !h->param.i_sync_lookahead )
++        h->out.i_bitstream = X264_MAX( 65536, h->out.i_bitstream / 4 );
+ 
+     h->nal_buffer_size = h->out.i_bitstream * 3/2 + 4 + 64; /* +4 for startcode, +64 for nal_escape assembly padding */
+     CHECKED_MALLOC( h->nal_buffer, h->nal_buffer_size );
+ 
+-    CHECKED_MALLOC( h->reconfig_h, sizeof(x264_t) );
++    h->reconfig_h = NULL;
+ 
+     if( h->param.i_threads > 1 &&
+         x264_threadpool_init( &h->threadpool, h->param.i_threads ) )
+@@ -1741,7 +1749,7 @@ x264_t *x264_encoder_open( x264_param_t *param, void *api )
+         x264_threadpool_init( &h->lookaheadpool, h->param.i_lookahead_threads ) )
+         goto fail;
+ 
+-#if HAVE_OPENCL
++#if HAVE_OPENCL && !X264_LOW_MEMORY_NO_OPENCL
+     if( h->param.b_opencl )
+     {
+         h->opencl.ocl = x264_opencl_load_library();
+@@ -1762,8 +1770,6 @@ x264_t *x264_encoder_open( x264_param_t *param, void *api )
+             CHECKED_MALLOC( h->lookahead_thread[i], sizeof(x264_t) );
+             *h->lookahead_thread[i] = *h;
+         }
+-    *h->reconfig_h = *h;
+-
+     for( int i = 0; i < h->param.i_threads; i++ )
+     {
+         int init_nal_count = h->param.i_slice_count + 3;
+@@ -1794,7 +1800,7 @@ x264_t *x264_encoder_open( x264_param_t *param, void *api )
+             goto fail;
+     }
+ 
+-#if HAVE_OPENCL
++#if HAVE_OPENCL && !X264_LOW_MEMORY_NO_OPENCL
+     if( h->param.b_opencl && x264_opencl_lookahead_init( h ) < 0 )
+         h->param.b_opencl = 0;
+ #endif
+@@ -1955,6 +1961,11 @@ int x264_encoder_reconfig_apply( x264_t *h, x264_param_t *param )
+ int x264_encoder_reconfig( x264_t *h, x264_param_t *param )
+ {
+     h = h->thread[h->thread[0]->i_thread_phase];
++    if( !h->reconfig_h )
++    {
++        CHECKED_MALLOC( h->reconfig_h, sizeof(x264_t) );
++        *h->reconfig_h = *h;
++    }
+     x264_param_t param_save = h->reconfig_h->param;
+     h->reconfig_h->param = h->param;
+ 
+@@ -1966,6 +1977,8 @@ int x264_encoder_reconfig( x264_t *h, x264_param_t *param )
+         h->reconfig_h->param = param_save;
+ 
+     return ret;
++fail:
++    return -1;
+ }
+ 
+ /****************************************************************************
+@@ -3372,8 +3385,9 @@ int     x264_encoder_encode( x264_t *h,
+         if( x264_frame_copy_picture( h, fenc, pic_in ) < 0 )
+             return -1;
+ 
+-        if( h->param.i_width != 16 * h->mb.i_mb_width ||
+-            h->param.i_height != 16 * h->mb.i_mb_height )
++        if( !fenc->b_direct_input &&
++            ( h->param.i_width != 16 * h->mb.i_mb_width ||
++              h->param.i_height != 16 * h->mb.i_mb_height ) )
+             x264_frame_expand_border_mod16( h, fenc );
+ 
+         fenc->i_frame = h->frames.i_input++;
+@@ -4204,7 +4218,7 @@ void    x264_encoder_close  ( x264_t *h )
+ 
+     x264_lookahead_delete( h );
+ 
+-#if HAVE_OPENCL
++#if HAVE_OPENCL && !X264_LOW_MEMORY_NO_OPENCL
+     x264_opencl_lookahead_delete( h );
+     x264_opencl_function_t *ocl = h->opencl.ocl;
+ #endif
+@@ -4571,7 +4585,7 @@ void    x264_encoder_close  ( x264_t *h )
+         x264_pthread_cond_destroy( &h->thread[i]->cv );
+         x264_free( h->thread[i] );
+     }
+-#if HAVE_OPENCL
++#if HAVE_OPENCL && !X264_LOW_MEMORY_NO_OPENCL
+     x264_opencl_close_library( ocl );
+ #endif
+ }
+diff --git a/encoder/slicetype.c b/encoder/slicetype.c
+index 160d9795..248c1f73 100644
+--- a/encoder/slicetype.c
++++ b/encoder/slicetype.c
+@@ -38,7 +38,7 @@ static int slicetype_frame_cost( x264_t *h, x264_mb_analysis_t *a,
+ #define x264_weights_analyse x264_template(weights_analyse)
+ void x264_weights_analyse( x264_t *h, x264_frame_t *fenc, x264_frame_t *ref, int b_lookahead );
+ 
+-#if HAVE_OPENCL
++#if HAVE_OPENCL && !X264_LOW_MEMORY_NO_OPENCL
+ #include "slicetype-cl.h"
+ #endif
+ 
+@@ -875,7 +875,7 @@ static int slicetype_frame_cost( x264_t *h, x264_mb_analysis_t *a,
+         output_inter[0] = h->scratch_buffer2;
+         output_intra[0] = output_inter[0] + output_buf_size;
+ 
+-#if HAVE_OPENCL
++#if HAVE_OPENCL && !X264_LOW_MEMORY_NO_OPENCL
+         if( h->param.b_opencl )
+         {
+             x264_opencl_lowres_init(h, fenc, a->i_lambda );
+@@ -1527,7 +1527,7 @@ void x264_slicetype_analyse( x264_t *h, int intra_minigop )
+         return;
+     }
+ 
+-#if HAVE_OPENCL
++#if HAVE_OPENCL && !X264_LOW_MEMORY_NO_OPENCL
+     x264_opencl_slicetype_prep( h, frames, num_frames, a.i_lambda );
+ #endif
+ 
+@@ -1737,7 +1737,7 @@ void x264_slicetype_analyse( x264_t *h, int intra_minigop )
+     for( int j = reset_start; j <= num_frames; j++ )
+         frames[j]->i_type = frames[j]->i_forced_type;
+ 
+-#if HAVE_OPENCL
++#if HAVE_OPENCL && !X264_LOW_MEMORY_NO_OPENCL
+     x264_opencl_slicetype_end( h );
+ #endif
+ }
+diff --git a/example.c b/example.c
+index 2ff47cda..266d017b 100644
+--- a/example.c
++++ b/example.c
+@@ -24,118 +24,323 @@
+  *****************************************************************************/
+ 
+ #ifdef _WIN32
+-#include <io.h>       /* _setmode() */
+ #include <fcntl.h>    /* _O_BINARY */
++#include <io.h>       /* _setmode() */
+ #endif
+ 
++#include <png.h>
+ #include <stdint.h>
+ #include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
+ #include <x264.h>
+ 
+-#define FAIL_IF_ERROR( cond, ... )\
+-do\
+-{\
+-    if( cond )\
+-    {\
+-        fprintf( stderr, __VA_ARGS__ );\
+-        goto fail;\
+-    }\
++#define FAIL_IF_ERROR( cond, ... ) \
++do \
++{ \
++    if( cond ) \
++    { \
++        fprintf( stderr, __VA_ARGS__ ); \
++        goto fail; \
++    } \
+ } while( 0 )
+ 
++static uint8_t clamp_u8( int value )
++{
++    if( value < 0 )
++        return 0;
++    if( value > 255 )
++        return 255;
++    return value;
++}
++
++static void rgb_to_i420( const uint8_t *rgb, int width, int height, x264_picture_t *pic )
++{
++    uint8_t *plane_y = pic->img.plane[0];
++    uint8_t *plane_u = pic->img.plane[1];
++    uint8_t *plane_v = pic->img.plane[2];
++    const int stride_y = pic->img.i_stride[0];
++    const int stride_u = pic->img.i_stride[1];
++    const int stride_v = pic->img.i_stride[2];
++
++    for( int y = 0; y < height; y += 2 )
++    {
++        for( int x = 0; x < width; x += 2 )
++        {
++            int u_acc = 0;
++            int v_acc = 0;
++
++            for( int dy = 0; dy < 2; ++dy )
++            {
++                int src_y = y + dy;
++                uint8_t *dst_y = plane_y + src_y * stride_y;
++
++                for( int dx = 0; dx < 2; ++dx )
++                {
++                    int src_x = x + dx;
++                    const uint8_t *pixel = rgb + ( src_y * width + src_x ) * 3;
++                    int r = pixel[0];
++                    int g = pixel[1];
++                    int b = pixel[2];
++
++                    int y_value = ( ( 66 * r + 129 * g + 25 * b + 128 ) >> 8 ) + 16;
++                    int u_value = ( ( -38 * r - 74 * g + 112 * b + 128 ) >> 8 ) + 128;
++                    int v_value = ( ( 112 * r - 94 * g - 18 * b + 128 ) >> 8 ) + 128;
++
++                    dst_y[src_x] = clamp_u8( y_value );
++                    u_acc += u_value;
++                    v_acc += v_value;
++                }
++            }
++
++            plane_u[( y / 2 ) * stride_u + ( x / 2 )] = clamp_u8( ( u_acc + 2 ) / 4 );
++            plane_v[( y / 2 ) * stride_v + ( x / 2 )] = clamp_u8( ( v_acc + 2 ) / 4 );
++        }
++    }
++}
++
++static int load_png_rgb( const char *path, uint8_t **rgb, int *width, int *height )
++{
++    int ok = 0;
++    FILE *fp = NULL;
++    png_structp png = NULL;
++    png_infop info = NULL;
++    png_bytep *rows = NULL;
++    uint8_t *pixels = NULL;
++
++    fp = fopen( path, "rb" );
++    if( !fp )
++    {
++        fprintf( stderr, "unable to open png: %s\n", path );
++        goto cleanup;
++    }
++
++    png = png_create_read_struct( PNG_LIBPNG_VER_STRING, NULL, NULL, NULL );
++    if( !png )
++    {
++        fprintf( stderr, "unable to create png read struct\n" );
++        goto cleanup;
++    }
++
++    info = png_create_info_struct( png );
++    if( !info )
++    {
++        fprintf( stderr, "unable to create png info struct\n" );
++        goto cleanup;
++    }
++
++    if( setjmp( png_jmpbuf( png ) ) )
++    {
++        fprintf( stderr, "failed to decode png: %s\n", path );
++        goto cleanup;
++    }
++
++    png_init_io( png, fp );
++    png_read_info( png, info );
++
++    png_uint_32 png_width = 0;
++    png_uint_32 png_height = 0;
++    int bit_depth = 0;
++    int color_type = 0;
++    int interlace_type = 0;
++    int compression_type = 0;
++    int filter_method = 0;
++
++    png_get_IHDR( png, info, &png_width, &png_height, &bit_depth, &color_type,
++                  &interlace_type, &compression_type, &filter_method );
++
++    if( ( png_width & 1 ) || ( png_height & 1 ) )
++    {
++        fprintf( stderr, "png dimensions must be even for yuv420: %ux%u\n",
++                 png_width, png_height );
++        goto cleanup;
++    }
++
++    if( bit_depth == 16 )
++        png_set_strip_16( png );
++
++    if( color_type == PNG_COLOR_TYPE_PALETTE )
++        png_set_palette_to_rgb( png );
++
++    if( color_type == PNG_COLOR_TYPE_GRAY && bit_depth < 8 )
++        png_set_expand_gray_1_2_4_to_8( png );
++
++    if( png_get_valid( png, info, PNG_INFO_tRNS ) )
++        png_set_tRNS_to_alpha( png );
++
++    if( color_type == PNG_COLOR_TYPE_GRAY || color_type == PNG_COLOR_TYPE_GRAY_ALPHA )
++        png_set_gray_to_rgb( png );
++
++    if( color_type & PNG_COLOR_MASK_ALPHA )
++        png_set_strip_alpha( png );
++
++    png_read_update_info( png, info );
++
++    *width = (int)png_width;
++    *height = (int)png_height;
++
++    pixels = malloc( (size_t)( *width ) * (size_t)( *height ) * 3 );
++    if( !pixels )
++    {
++        fprintf( stderr, "out of memory for rgb buffer\n" );
++        goto cleanup;
++    }
++
++    rows = malloc( sizeof( png_bytep ) * (size_t)( *height ) );
++    if( !rows )
++    {
++        fprintf( stderr, "out of memory for png row pointers\n" );
++        goto cleanup;
++    }
++
++    for( int y = 0; y < *height; ++y )
++        rows[y] = pixels + (size_t)y * (size_t)( *width ) * 3;
++
++    png_read_image( png, rows );
++    png_read_end( png, NULL );
++
++    *rgb = pixels;
++    pixels = NULL;
++    ok = 1;
++
++cleanup:
++    free( rows );
++    free( pixels );
++    if( png || info )
++        png_destroy_read_struct( &png, &info, NULL );
++    if( fp )
++        fclose( fp );
++    return ok;
++}
++
++static int write_nals( FILE *out, x264_nal_t *nal, int i_nal )
++{
++    for( int i = 0; i < i_nal; ++i )
++    {
++        if( fwrite( nal[i].p_payload, 1, nal[i].i_payload, out ) != (size_t)nal[i].i_payload )
++            return 0;
++    }
++    return 1;
++}
++
+ int main( int argc, char **argv )
+ {
+-    int width, height;
++    int width = 0;
++    int height = 0;
+     x264_param_t param;
+     x264_picture_t pic;
+     x264_picture_t pic_out;
+-    x264_t *h;
+-    int i_frame = 0;
++    x264_t *h = NULL;
+     int i_frame_size;
+     x264_nal_t *nal;
+     int i_nal;
++    FILE *out = NULL;
++    uint8_t *rgb = NULL;
+ 
+ #ifdef _WIN32
+-    _setmode( _fileno( stdin ),  _O_BINARY );
+     _setmode( _fileno( stdout ), _O_BINARY );
+     _setmode( _fileno( stderr ), _O_BINARY );
+ #endif
+ 
+-    FAIL_IF_ERROR( !(argc > 1), "Example usage: example 352x288 <input.yuv >output.h264\n" );
+-    FAIL_IF_ERROR( 2 != sscanf( argv[1], "%dx%d", &width, &height ), "resolution not specified or incorrect\n" );
++    memset( &pic, 0, sizeof( pic ) );
++    memset( &pic_out, 0, sizeof( pic_out ) );
++
++    FAIL_IF_ERROR( argc != 3, "usage: %s input.png output.h264\n", argv[0] );
++    FAIL_IF_ERROR( !load_png_rgb( argv[1], &rgb, &width, &height ), "failed to decode png\n" );
+ 
+     /* Get default params for preset/tuning */
+-    if( x264_param_default_preset( &param, "medium", NULL ) < 0 )
++    if( x264_param_default_preset( &param, "ultrafast", "zerolatency" ) < 0 )
+         goto fail;
+ 
+-    /* Configure non-default params */
++    /* Mirror the low-latency all-IDR setup from test.rs. */
+     param.i_bitdepth = 8;
+-    param.i_csp = X264_CSP_I420;
+-    param.i_width  = width;
+-    param.i_height = height;
+-    param.b_vfr_input = 0;
+-    param.b_repeat_headers = 1;
++    param.i_keyint_max = 1;
++    param.i_keyint_min = 1;
++    param.i_scenecut_threshold = 0;
++    param.b_intra_refresh = 0;
++    param.i_bframe = 0;
++    param.i_bframe_adaptive = 0;
++    param.i_frame_reference = 1;
++    param.i_slice_count = 1;
++    param.i_slice_count_max = 1;
++    param.i_dpb_size = 1;
++    param.b_cabac = 0;
++    param.b_aud = 0;
++    param.b_repeat_headers = 0;
+     param.b_annexb = 1;
++    param.b_deblocking_filter = 0;
++    param.b_open_gop = 0;
++    param.b_vfr_input = 0;
++    param.i_sync_lookahead = 0;
++    param.rc.i_lookahead = 0;
++    param.rc.i_rc_method = X264_RC_CQP;
++    param.rc.i_qp_constant = 23;
++    param.rc.b_mb_tree = 0;
++    param.rc.i_aq_mode = 0;
++    param.i_width = width;
++    param.i_height = height;
++    param.i_csp = X264_CSP_I420;
++    param.i_bframe_pyramid = 0;
++    param.analyse.intra = 0;
++    param.analyse.inter = 0;
++    param.analyse.i_me_method = 0;
++    param.analyse.i_subpel_refine = 0;
++    param.analyse.i_trellis = 0;
++    param.analyse.b_transform_8x8 = 0;
++    param.analyse.b_psy = 0;
++    param.analyse.b_psnr = 0;
++    param.analyse.b_ssim = 0;
++    param.analyse.i_direct_mv_pred = 0;
++    param.analyse.b_chroma_me = 0;
++    param.analyse.b_fast_pskip = 0;
++    param.analyse.b_dct_decimate = 0;
++    param.analyse.b_mixed_references = 0;
++    param.i_threads = 1;
++    param.i_lookahead_threads = 0;
++    param.b_sliced_threads = 0;
+ 
+-    /* Apply profile restrictions. */
+-    if( x264_param_apply_profile( &param, "high" ) < 0 )
++    if( x264_param_apply_profile( &param, "baseline" ) < 0 )
+         goto fail;
+ 
+     if( x264_picture_alloc( &pic, param.i_csp, param.i_width, param.i_height ) < 0 )
+         goto fail;
+-#undef fail
+-#define fail fail2
+ 
+     h = x264_encoder_open( &param );
+     if( !h )
+         goto fail;
+-#undef fail
+-#define fail fail3
+ 
+-    int luma_size = width * height;
+-    int chroma_size = luma_size / 4;
+-    /* Encode frames */
+-    for( ;; i_frame++ )
+-    {
+-        /* Read input frame */
+-        if( fread( pic.img.plane[0], 1, luma_size, stdin ) != (unsigned)luma_size )
+-            break;
+-        if( fread( pic.img.plane[1], 1, chroma_size, stdin ) != (unsigned)chroma_size )
+-            break;
+-        if( fread( pic.img.plane[2], 1, chroma_size, stdin ) != (unsigned)chroma_size )
+-            break;
+-
+-        pic.i_pts = i_frame;
+-        i_frame_size = x264_encoder_encode( h, &nal, &i_nal, &pic, &pic_out );
+-        if( i_frame_size < 0 )
+-            goto fail;
+-        else if( i_frame_size )
+-        {
+-            if( !fwrite( nal->p_payload, i_frame_size, 1, stdout ) )
+-                goto fail;
+-        }
+-    }
+-    /* Flush delayed frames */
+-    while( x264_encoder_delayed_frames( h ) )
++    out = fopen( argv[2], "wb" );
++    if( !out )
+     {
+-        i_frame_size = x264_encoder_encode( h, &nal, &i_nal, NULL, &pic_out );
+-        if( i_frame_size < 0 )
+-            goto fail;
+-        else if( i_frame_size )
+-        {
+-            if( !fwrite( nal->p_payload, i_frame_size, 1, stdout ) )
+-                goto fail;
+-        }
++        fprintf( stderr, "unable to open output: %s\n", argv[2] );
++        goto fail;
+     }
+ 
++    rgb_to_i420( rgb, width, height, &pic );
++    pic.i_pts = 0;
++    pic.i_type = X264_TYPE_IDR;
++
++    i_frame_size = x264_encoder_headers( h, &nal, &i_nal );
++    if( i_frame_size < 0 || !write_nals( out, nal, i_nal ) )
++        goto fail;
++
++    i_frame_size = x264_encoder_encode( h, &nal, &i_nal, &pic, &pic_out );
++    if( i_frame_size < 0 || !write_nals( out, nal, i_nal ) )
++        goto fail;
++
++    fclose( out );
++    free( rgb );
+     x264_encoder_close( h );
+     x264_picture_clean( &pic );
+     return 0;
+ 
+-#undef fail
+-fail3:
+-    x264_encoder_close( h );
+-fail2:
+-    x264_picture_clean( &pic );
+ fail:
++    if( out )
++        fclose( out );
++    free( rgb );
++    if( h )
++        x264_encoder_close( h );
++    if( pic.img.plane[0] )
++        x264_picture_clean( &pic );
+     return -1;
+ }
+diff --git a/lowmem/.gitignore b/lowmem/.gitignore
+new file mode 100644
+index 00000000..eb11a675
+--- /dev/null
++++ b/lowmem/.gitignore
+@@ -0,0 +1,3 @@
++*.png
++*.jpg
++*.h264
+\ No newline at end of file
+diff --git a/lowmem/benchmark.sh b/lowmem/benchmark.sh
+new file mode 100644
+index 00000000..e451cc81
+--- /dev/null
++++ b/lowmem/benchmark.sh
+@@ -0,0 +1,5 @@
++rm -f output.hp264 output.png
++
++make -C .. example; /usr/bin/time -v ../example test.png output.h264;
++ffmpeg -i output.h264 output.png
++sha256sum output.h264
+\ No newline at end of file

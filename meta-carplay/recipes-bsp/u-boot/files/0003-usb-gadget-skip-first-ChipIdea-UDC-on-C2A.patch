@@ -1,0 +1,88 @@
+Date: Wed, 29 Apr 2026 13:30:00 +0200
+Subject: [PATCH] usb: gadget: skip first ChipIdea UDC on C2A
+
+The C2A board has the first ChipIdea controller wired as the USB-A host
+port, while fastboot is expected on the second controller.
+
+U-Boot's UDC core inherits the Linux-style "bind to the first free UDC"
+logic.  On this board that makes fastboot attach to the wrong controller.
+Skip the first ci-udc-otg instance for C2A so the existing scan naturally
+falls through to the later ci_hdrc.1/usbg2 controller.
+
+Also map UDC index 0 to index 1 for C2A before probing the gadget device.
+This keeps commands such as "fastboot 0" on the second controller instead
+of instantiating the USB-A-side UDC first.
+
+---
+ drivers/usb/gadget/udc/udc-core.c   | 22 ++++++++++++++++++++++
+ drivers/usb/gadget/udc/udc-uclass.c | 10 ++++++++++
+ 2 files changed, 32 insertions(+)
+
+diff --git a/drivers/usb/gadget/udc/udc-core.c b/drivers/usb/gadget/udc/udc-core.c
+index ba658d9229..05cd748795 100644
+--- a/drivers/usb/gadget/udc/udc-core.c
++++ b/drivers/usb/gadget/udc/udc-core.c
+@@ -320,6 +320,25 @@ err1:
+ 	return ret;
+ }
+ 
++static bool c2a_udc_is_ignored(struct usb_udc *udc)
++{
++	struct udevice *dev = (struct udevice *)udc->dev.parent;
++
++	if (!IS_ENABLED(CONFIG_TARGET_MX6UL_C2A))
++		return false;
++
++	if (!dev || !dev->driver)
++		return false;
++
++	/*
++	 * On the C2A board the first ChipIdea controller is wired as USB-A
++	 * host.  U-Boot's UDC core otherwise binds every gadget to the first
++	 * visible UDC, so skip ci_hdrc.0's U-Boot counterpart and let the
++	 * gadget bind to the later ci_hdrc.1/usbg2 instance.
++	 */
++	return !strcmp(dev->driver->name, "ci-udc-otg") && dev_seq(dev) == 0;
++}
++
+ int usb_gadget_probe_driver(struct usb_gadget_driver *driver)
+ {
+ 	struct usb_udc		*udc = NULL;
+@@ -333,6 +352,9 @@ int usb_gadget_probe_driver(struct usb_gadget_driver *driver)
+ 	list_for_each_entry(udc, &udc_list, list) {
+ 		udc_count++;
+ 
++		if (c2a_udc_is_ignored(udc))
++			continue;
++
+ 		/* For now we take the first one */
+ 		if (!udc->driver)
+ 			goto found;
+diff --git a/drivers/usb/gadget/udc/udc-uclass.c b/drivers/usb/gadget/udc/udc-uclass.c
+index 8767353712..c1f8efde6c 100644
+--- a/drivers/usb/gadget/udc/udc-uclass.c
++++ b/drivers/usb/gadget/udc/udc-uclass.c
+@@ -13,11 +13,21 @@
+ #include <linux/usb/gadget.h>
+ 
+ #if CONFIG_IS_ENABLED(DM_USB_GADGET)
++static int c2a_udc_index(int index)
++{
++	if (IS_ENABLED(CONFIG_TARGET_MX6UL_C2A) && index == 0)
++		return 1;
++
++	return index;
++}
++
+ int udc_device_get_by_index(int index, struct udevice **udev)
+ {
+ 	struct udevice *dev = NULL;
+ 	int ret;
+ 
++	index = c2a_udc_index(index);
++
+ 	ret = uclass_get_device_by_seq(UCLASS_USB_GADGET_GENERIC, index, &dev);
+ 	if (!ret && dev) {
+ 		*udev = dev;
+-- 
+2.50.0

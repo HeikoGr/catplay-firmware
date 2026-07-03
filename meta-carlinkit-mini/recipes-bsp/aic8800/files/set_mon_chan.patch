@@ -1,0 +1,52 @@
+diff --git a/aic8800_fdrv/aic_priv_cmd.c b/aic8800_fdrv/aic_priv_cmd.c
+index 69c0475..1edfa06 100644
+--- a/aic8800_fdrv/aic_priv_cmd.c
++++ b/aic8800_fdrv/aic_priv_cmd.c
+@@ -1737,31 +1737,23 @@ int rwnx_cfg80211_set_monitor_channel_(struct wiphy *wiphy,
+                                              struct cfg80211_chan_def *chandef);
+ int rwnx_atoi2(char *value, int c_len);
+ void set_mon_chan(struct rwnx_vif *vif, char *parameter){
+-    struct cfg80211_chan_def *chandef = NULL;
++    struct cfg80211_chan_def chandef;
+     int freq = 0;
+-    
+-    
+-    chandef = (struct cfg80211_chan_def *)vmalloc(sizeof(struct cfg80211_chan_def));
+-    memset(chandef, 0, sizeof(struct cfg80211_chan_def));
+-    chandef->chan = (struct ieee80211_channel *)vmalloc(sizeof(struct ieee80211_channel));
+-    memset(chandef->chan, 0, sizeof(struct ieee80211_channel));
+-    
++
++    memset(&chandef, 0, sizeof(chandef));
+     freq = rwnx_atoi2(parameter, 4);
+ 
+-    if(freq <= 2484){
+-        chandef->chan->band = NL80211_BAND_2GHZ;
+-    }else{
+-        chandef->chan->band = NL80211_BAND_5GHZ;
++    chandef.chan = ieee80211_get_channel(vif->rwnx_hw->wiphy, freq);
++    if (!chandef.chan) {
++        printk("%s invalid monitor frequency: %d\n", __func__, freq);
++        return;
+     }
+-    chandef->chan->center_freq = freq;
+-    chandef->width = NL80211_CHAN_WIDTH_20;
+-    chandef->center_freq1 = chandef->chan->center_freq;
+-    chandef->center_freq2 = 0;
+ 
+-    rwnx_cfg80211_set_monitor_channel_(vif->rwnx_hw->wiphy, chandef);
++    chandef.width = NL80211_CHAN_WIDTH_20;
++    chandef.center_freq1 = chandef.chan->center_freq;
++    chandef.center_freq2 = 0;
+ 
+-    vfree(chandef->chan);
+-    vfree(chandef);
++    rwnx_cfg80211_set_monitor_channel_(vif->rwnx_hw->wiphy, &chandef);
+ 
+ }
+ 
+@@ -2172,4 +2164,3 @@ exit:
+ 	Sreturn ret;
+ }
+ #endif
+-

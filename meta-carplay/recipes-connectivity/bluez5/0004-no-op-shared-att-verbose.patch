@@ -1,0 +1,20 @@
+Upstream-Status: Inappropriate [hack]
+--- a/src/shared/att.c
++++ b/src/shared/att.c
+@@ -307,14 +307,8 @@
+ 	util_debug_va(att->debug_callback, att->debug_data, format, va);
+ 	va_end(va);
+ }
+-
+-#define DBG(_att, _format, _arg...) \
+-	att_log(_att, BT_ATT_DEBUG, "%s:%s() " _format, __FILE__, __func__,\
+-		## _arg)
+-
+-#define VERBOSE(_att, _format, _arg...) \
+-	att_log(_att, BT_ATT_DEBUG_VERBOSE, "%s:%s() " _format, __FILE__, \
+-		__func__, ## _arg)
++#define DBG(_att, _format, _arg...) do { } while (0)
++#define VERBOSE(_att, _format, _arg...) do { } while (0)
+ 
+ static void att_hexdump(struct bt_att *att, char dir, const void *data,
+ 							size_t len)

@@ -1,0 +1,30 @@
+[package]
+name = "carlinkit_otalib"
+version = "0.1.0"
+edition = "2024"
+build = "build.rs"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+opt-level = "z"
+lto = true
+codegen-units = 1
+
+[dependencies]
+aes = "0.8.4"
+cbc = "0.1.2"
+crc32fast = { version = "1.5.0", default-features = false }
+heapless = "0.9.1"
+libc = "0.2.183"
+md5hash = "0.1.1"
+miniz_oxide = "0.8.9"
+
+[features]
+ota_packer = []
+signer = []
+
+[package.metadata.cargo-std-aware]
+no-std = true

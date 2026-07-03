@@ -1,0 +1,32 @@
+Date: Sun, 6 Jul 2025 05:31:56 +0200
+Subject: [PATCH] Register custom C2A board
+
+---
+ arch/arm/mach-imx/mx6/Kconfig | 15 +++++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/arch/arm/mach-imx/mx6/Kconfig b/arch/arm/mach-imx/mx6/Kconfig
+index 2a0b8db2cfd..ae975ed4853 100644
+--- a/arch/arm/mach-imx/mx6/Kconfig
++++ b/arch/arm/mach-imx/mx6/Kconfig
+@@ -542,2 +542,14 @@ config TARGET_MX6UL_14X14_EVK
+ 
++config TARGET_MX6UL_C2A
++       bool "mx6ul_c2a"
++       depends on MX6UL
++        select BOARD_LATE_INIT
++        select DM
++        select DM_THERMAL
++        select SUPPORT_SPL
++        select IMX_MODULE_FUSE
++        select OF_SYSTEM_SETUP
++        imply CMD_DM
++        select ARCH_MISC_INIT
++
+ config TARGET_MX6UL_ENGICAM
+@@ -815,2 +829,3 @@ source "board/freescale/mx6sxsabreauto/Kconfig"
+ source "board/freescale/mx6ul_14x14_evk/Kconfig"
++source "board/freescale/mx6ul_c2a/Kconfig"
+ source "board/freescale/mx6ullevk/Kconfig"
+-- 
+2.50.0

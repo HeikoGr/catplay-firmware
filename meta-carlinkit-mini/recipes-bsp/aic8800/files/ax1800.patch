@@ -1,0 +1,58 @@
+diff --git a/aic8800_bsp/aic_bsp_driver.c b/aic8800_bsp/aic_bsp_driver.c
+index c5af175..0a0146c 100644
+--- a/aic8800_bsp/aic_bsp_driver.c
++++ b/aic8800_bsp/aic_bsp_driver.c
+@@ -1650,7 +1650,7 @@ static struct aicbt_info_t aicbt_info[]={
+         .txpwr_lvl     = AICBT_TXPWR_LVL_DEFAULT_8800dc,
+     },//PRODUCT_ID_AIC8800DW
+     {
+-        .btmode        = AICBT_BTMODE_DEFAULT_8800d80,
++        .btmode        = AICBT_BTMODE_BT_ONLY, /* AX1800 */
+         .btport        = AICBT_BTPORT_DEFAULT,
+         .uart_baud     = AICBT_UART_BAUD_DEFAULT,
+         .uart_flowctrl = AICBT_UART_FC_DEFAULT,
+diff --git a/aic8800_bsp/aic_bsp_driver.h b/aic8800_bsp/aic_bsp_driver.h
+index df14e65..cf68b9a 100644
+--- a/aic8800_bsp/aic_bsp_driver.h
++++ b/aic8800_bsp/aic_bsp_driver.h
+@@ -530,7 +530,7 @@ enum chip_rev {
+ 
+ 
+ #define FEATURE_SDIO_CLOCK          50000000 // 0: default, other: target clock rate
+-#define FEATURE_SDIO_CLOCK_V3       150000000 // 0: default, other: target clock rate
++#define FEATURE_SDIO_CLOCK_V3       50000000 // 0: default, other: target clock rate /* AX1800: use 50Mhz */
+ #define FEATURE_SDIO_PHASE          2        // 0: default, 2: 180°
+ 
+ struct aicbt_patch_table {
+diff --git a/aic8800_bsp/aicsdio.c b/aic8800_bsp/aicsdio.c
+index 940d631..57d1cf7 100644
+--- a/aic8800_bsp/aicsdio.c
++++ b/aic8800_bsp/aicsdio.c
+@@ -1931,7 +1931,7 @@ int aicwf_sdiov3_func_init(struct aic_sdio_dev *sdiodev)
+ 	struct mmc_host *host;
+ 	u8 byte_mode_disable = 0x1;//1: no byte mode
+ 	int ret = 0;
+-    //u8 val;
++    u8 val;
+ 	struct aicbsp_feature_t feature;
+ 
+ 	aicbsp_get_feature(&feature, NULL);
+@@ -1961,7 +1961,7 @@ int aicwf_sdiov3_func_init(struct aic_sdio_dev *sdiodev)
+         sdio_release_host(sdiodev->func);
+         return ret;
+     }
+-#if 0
++#if 1
+     if (host->ios.timing == MMC_TIMING_UHS_DDR50) {
+         val = 0x21;//0x1D;//0x5;
+     } else {
+@@ -1980,7 +1980,8 @@ int aicwf_sdiov3_func_init(struct aic_sdio_dev *sdiodev)
+         sdio_release_host(sdiodev->func);
+         return ret;
+     }
+-    sdio_f0_writeb(sdiodev->func, 0x40, 0xF1, &ret);
++    /* AX1800: use iopad delay1 = 0x80 to fix SDIO timings */
++    sdio_f0_writeb(sdiodev->func, 0x80, 0xF1, &ret);
+     if (ret) {
+         sdio_err("set iopad delay1 fail %d\n", ret);
+         sdio_release_host(sdiodev->func);

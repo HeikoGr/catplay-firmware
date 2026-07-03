@@ -1,0 +1,24 @@
+Date: Sat, 22 Nov 2025 22:45:36 +0100
+Subject: [PATCH] ci-hdrc: fix 5 second role-switch delay when acting as a CarPlay HeadUnit
+
+ci_hdrc ci_hdrc.0: timeout waiting for 00000800 in OTGSC
+---
+ drivers/usb/chipidea/otg.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/usb/chipidea/otg.c b/drivers/usb/chipidea/otg.c
+index 647e98f4e..5ba70a0d2 100644
+--- a/drivers/usb/chipidea/otg.c
++++ b/drivers/usb/chipidea/otg.c
+@@ -196,7 +196,7 @@ void ci_handle_id_switch(struct ci_hdrc *ci)
+ 			 * care vbus on the board, since it will not affect
+ 			 * external connector status.
+ 			 */
+-			hw_wait_vbus_lower_bsv(ci);
++			{} /* hw_wait_vbus_lower_bsv(ci); */
+ 
+ 		ci_role_start(ci, role);
+ 		/* vbus change may have already occurred */
+-- 
+2.51.1
+

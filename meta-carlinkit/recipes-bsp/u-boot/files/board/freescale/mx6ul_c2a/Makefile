@@ -1,0 +1,1 @@
+obj-y  := mx6ul_c2a.o

@@ -1,0 +1,11 @@
+# U-Boot SPL (128 KB)
+part clk-u-boot --source rawcopy --sourceparams="file=${CARLINKIT_WIC_UBOOT_PATH}" --offset ${C2A_UBOOT_OFFSET} --fixed-size ${C2A_UBOOT_SIZE} --no-table
+
+# Kernel (3 MB)
+part kernel --source rawcopy --sourceparams="file=${C2A_WIC_KERNEL_PATH}" --offset ${C2A_KERNEL_OFFSET} --fixed-size ${C2A_KERNEL_SIZE} --no-table
+
+# Initrd (flexible - 12MB)
+#part kernel --source rawcopy --sourceparams="file=${C2A_WIC_KERNEL_INITRD_PATH}" --offset ${C2A_KERNEL_INITRD_OFFSET} --fixed-size ${C2A_KERNEL_INITRD_SIZE} --no-table
+
+# Persistent overlay (flexible - 256KB)
+part / --source rawcopy --sourceparams="file=${C2A_WIC_ROOTFS_PATH}" --offset ${C2A_ROOTFS_OFFSET} --fixed-size ${C2A_ROOTFS_SIZE} --no-table

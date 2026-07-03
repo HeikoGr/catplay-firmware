@@ -1,0 +1,14 @@
+diff --git a/aic8800_fdrv/rwnx_msg_tx.c b/aic8800_fdrv/rwnx_msg_tx.c
+index 7435c74..86c1aa6 100644
+--- a/aic8800_fdrv/rwnx_msg_tx.c
++++ b/aic8800_fdrv/rwnx_msg_tx.c
+@@ -1116,7 +1116,8 @@ int rwnx_send_rf_calib_req(struct rwnx_hw *rwnx_hw, struct mm_set_rf_calib_cfm
+ 	
+ 	RWNX_DBG(RWNX_FN_ENTRY_STR);
+ 	
+-	if((rwnx_hw->sdiodev->chipid == PRODUCT_ID_AIC8800D80X2))
++	if ((rwnx_hw->sdiodev->chipid == PRODUCT_ID_AIC8800D80) ||
++	    (rwnx_hw->sdiodev->chipid == PRODUCT_ID_AIC8800D80X2))
+ 	{
+ 		struct mm_set_rf_calib_req_v2 *rf_calib_req;
+ 		struct mm_set_rf_calib_cfm_v2 cfm2;

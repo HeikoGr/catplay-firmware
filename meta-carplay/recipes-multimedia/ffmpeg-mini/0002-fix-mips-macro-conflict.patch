@@ -1,0 +1,56 @@
+Date: Sun, 28 Sep 2025 18:12:53 +0200
+Subject: [PATCH] Fix duplicate macro definitions preventing LTO builds on MIPS
+
+---
+ libavutil/mips/asmdefs.h | 4 ++--
+ libavutil/mips/cpu.c     | 5 +++--
+ 2 files changed, 5 insertions(+), 4 deletions(-)
+
+diff --git a/libavutil/mips/asmdefs.h b/libavutil/mips/asmdefs.h
+index 659342bab9..4bc3922c86 100644
+--- a/libavutil/mips/asmdefs.h
++++ b/libavutil/mips/asmdefs.h
+@@ -84,7 +84,7 @@
+         "\\var        = " #n "\n\t"                \
+         ".endif\n\t"
+ 
+-__asm__(".macro        parse_r var r\n\t"
++/*__asm__(".macro        parse_r var r\n\t"
+         "\\var        = -1\n\t"
+         _IFC_REG(0)  _IFC_REG(1)  _IFC_REG(2)  _IFC_REG(3)
+         _IFC_REG(4)  _IFC_REG(5)  _IFC_REG(6)  _IFC_REG(7)
+@@ -97,7 +97,7 @@ __asm__(".macro        parse_r var r\n\t"
+         ".iflt        \\var\n\t"
+         ".error        \"Unable to parse register name \\r\"\n\t"
+         ".endif\n\t"
+-        ".endm");
++        ".endm"); */
+ 
+ /* General union structure for clang adaption */
+ union mmi_intfloat64 {
+diff --git a/libavutil/mips/cpu.c b/libavutil/mips/cpu.c
+index 2009c70f71..68b6466e48 100644
+--- a/libavutil/mips/cpu.c
++++ b/libavutil/mips/cpu.c
+@@ -42,7 +42,8 @@ static uint32_t read_cpucfg(uint32_t reg)
+ {
+         uint32_t __res;
+ 
+-        __asm__ __volatile__(
++	     return 0;
++        /*__asm__ __volatile__(
+                 "parse_r __res,%0\n\t"
+                 "parse_r reg,%1\n\t"
+                 ".insn \n\t"
+@@ -51,7 +52,7 @@ static uint32_t read_cpucfg(uint32_t reg)
+                 :"r"(reg)
+                 :
+                 );
+-        return __res;
++        return __res;*/
+ }
+ 
+ #define LOONGSON_CFG1 0x1
+-- 
+2.51.0
+

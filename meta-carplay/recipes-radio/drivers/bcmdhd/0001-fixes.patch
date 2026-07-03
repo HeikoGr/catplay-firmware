@@ -1,0 +1,305 @@
+
+Date: Mon, 24 Nov 2025 03:37:15 +0100
+Subject: [PATCH] fixes
+
+---
+ bcmdhd.101.10.591.x/Makefile            | 23 +++++++++-------
+ bcmdhd.101.10.591.x/dbus_usb_linux.c    |  2 +-
+ bcmdhd.101.10.591.x/dhd.h               |  2 +-
+ bcmdhd.101.10.591.x/dhd_linux.c         |  2 +-
+ bcmdhd.101.10.591.x/dhd_linux_platdev.c | 35 ++++++++++++++-----------
+ bcmdhd.101.10.591.x/dhd_linux_rx.c      |  2 +-
+ bcmdhd.101.10.591.x/dhd_linux_tx.c      |  2 +-
+ bcmdhd.101.10.591.x/dhd_static_buf.c    |  2 --
+ bcmdhd.101.10.591.x/wl_cfgvif.c         |  4 ++-
+ 9 files changed, 41 insertions(+), 33 deletions(-)
+
+diff --git a/Makefile b/Makefile
+index c7b5fc4..9f5f8a6 100755
+--- a/Makefile
++++ b/Makefile
+@@ -45,8 +45,10 @@ $(info bcm SDIO driver configured)
+ CONFIG_DHD_USE_STATIC_BUF := y
+ endif
+ 
++CONFIG_BCMDHD_SDIO := y
++
+ ifeq ($(CONFIG_BCMDHD_SDIO),y)
+-MODULE_NAME := dhd
++MODULE_NAME := bcmdhd_sdio
+ else
+ ifeq ($(CONFIG_BCMDHD_USB),y)
+ MODULE_NAME := bcmdhd
+@@ -61,11 +63,11 @@ CONFIG_BCMDHD ?= m
+ #CONFIG_BCMDHD_PCIE := y
+ #CONFIG_BCMDHD_USB := y
+ 
+-CONFIG_BCMDHD_OOB := y
++CONFIG_BCMDHD_OOB := n
+ #CONFIG_BCMDHD_CUSB := y
+-#CONFIG_BCMDHD_NO_POWER_OFF := y
++CONFIG_BCMDHD_NO_POWER_OFF := y
+ CONFIG_BCMDHD_PROPTXSTATUS := y
+-CONFIG_DHD_USE_STATIC_BUF := y
++CONFIG_DHD_USE_STATIC_BUF := n
+ #CONFIG_BCMDHD_STATIC_BUF_IN_DHD := y
+ 
+ ifeq ($(CONFIG_ANDROID_14),y)
+@@ -80,7 +82,7 @@ CONFIG_BCMDHD_DEBUG := y
+ #CONFIG_BCMDHD_RECONNECT := y
+ #CONFIG_BCMDHD_TIMESTAMP := y
+ #CONFIG_BCMDHD_WAPI := y
+-#CONFIG_BCMDHD_REQUEST_FW := y
++CONFIG_BCMDHD_REQUEST_FW := y
+ #CONFIG_BCMDHD_FW_SIGNATURE := y
+ #CONFIG_BCMDHD_DWDS := y
+ CONFIG_BCMDHD_TPUT := y
+@@ -89,7 +91,7 @@ CONFIG_BCMDHD_TPUT := y
+ #CONFIG_BCMDHD_ADAPTER_INDEX := 0
+ 
+ CONFIG_MACH_PLATFORM := y
+-#CONFIG_BCMDHD_DTS := y
++CONFIG_BCMDHD_DTS := y
+ 
+ ifndef CONFIG_KASAN
+ 	KBUILD_CFLAGS_MODULE += -Wframe-larger-than=3000
+@@ -465,10 +467,11 @@ endif
+ ifeq ($(CONFIG_MACH_PLATFORM),y)
+ 	DHDOFILES += dhd_gpio.o
+ ifeq ($(CONFIG_BCMDHD_DTS),y)
+-	DHDCFLAGS += -DBCMDHD_DTS
++	DHDCFLAGS += -DCONFIG_DTS
+ endif
+-	DHDCFLAGS += -DCUSTOMER_HW -DDHD_OF_SUPPORT
+-	DHDCFLAGS += -DCUSTOMER_HW_AMLOGIC
++
++#	DHDCFLAGS += -DCUSTOMER_HW -DDHD_OF_SUPPORT
++#	DHDCFLAGS += -DCUSTOMER_HW_AMLOGIC
+ 
+ # for config custom MAC
+ #	DHDCFLAGS += -DGET_CUSTOM_MAC_ENABLE -DCUSTOM_MULTI_MAC
+@@ -514,7 +517,7 @@ ifeq  ($(CONFIG_BCMDHD_STATIC_BUF_IN_DHD),y)
+ 	DHDOFILES += dhd_static_buf.o
+ 	DHDCFLAGS += -DDHD_STATIC_IN_DRIVER
+ else
+-#	obj-m += dhd_static_buf.o
++	obj-m += dhd_static_buf.o
+ endif
+ 	DHDCFLAGS += -DSTATIC_WL_PRIV_STRUCT -DENHANCED_STATIC_BUF
+ 	DHDCFLAGS += -DCONFIG_DHD_USE_STATIC_BUF
+diff --git a/dbus_usb_linux.c b/dbus_usb_linux.c
+index e5ae207..c07e8b2 100755
+--- a/dbus_usb_linux.c
++++ b/dbus_usb_linux.c
+@@ -88,7 +88,7 @@
+ #include <linux/spinlock.h>
+ #include <linux/list.h>
+ #include <asm/uaccess.h>
+-#include <asm/unaligned.h>
++#include <linux/unaligned.h>
+ #include <dbus.h>
+ #include <bcmutils.h>
+ #include <bcmdevs_legacy.h>
+diff --git a/dhd.h b/dhd.h
+index 24e1aa4..880b7f5 100755
+--- a/dhd.h
++++ b/dhd.h
+@@ -65,7 +65,7 @@
+ #include <linux/ethtool.h>
+ #include <linux/proc_fs.h>
+ #include <asm/uaccess.h>
+-#include <asm/unaligned.h>
++#include <linux/unaligned.h>
+ #include <linux/fs.h>
+ #include <linux/namei.h>
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)
+diff --git a/dhd_linux.c b/dhd_linux.c
+index c4dc330..eb45599 100755
+--- a/dhd_linux.c
++++ b/dhd_linux.c
+@@ -81,7 +81,7 @@
+ #endif /* ENABLE_ADAPTIVE_SCHED */
+ #include <linux/rtc.h>
+ #include <asm/uaccess.h>
+-#include <asm/unaligned.h>
++#include <linux/unaligned.h>
+ #include <dhd_linux_priv.h>
+ 
+ #include <epivers.h>
+diff --git a/dhd_linux_platdev.c b/dhd_linux_platdev.c
+index 72d0632..9355aa7 100755
+--- a/dhd_linux_platdev.c
++++ b/dhd_linux_platdev.c
+@@ -115,6 +115,8 @@ extern struct wifi_platform_data dhd_wlan_control;
+ #endif /* CONFIG_OF && !defined(CONFIG_ARCH_MSM) */
+ #endif /* !defind(CONFIG_DTS) */
+ 
++extern struct wifi_platform_data dhd_wlan_control; /* HACK */
++
+ static int dhd_wifi_platform_load(void);
+ 
+ extern void* wl_cfg80211_get_dhdp(struct net_device *dev);
+@@ -452,7 +454,7 @@ static int wifi_plat_dev_drv_probe(struct platform_device *pdev)
+ 	return wifi_plat_dev_probe_ret;
+ }
+ 
+-static int wifi_plat_dev_drv_remove(struct platform_device *pdev)
++static void wifi_plat_dev_drv_remove(struct platform_device *pdev)
+ {
+ 	wifi_adapter_info_t *adapter;
+ 
+@@ -475,7 +477,6 @@ static int wifi_plat_dev_drv_remove(struct platform_device *pdev)
+ #ifdef BCMDHD_PLATDEV
+ 	dhd_wlan_deinit_plat_data(adapter);
+ #endif
+-	return 0;
+ }
+ 
+ static int wifi_plat_dev_drv_suspend(struct platform_device *pdev, pm_message_t state)
+@@ -644,7 +645,7 @@ static int wifi_ctrlfunc_register_drv(void)
+ #endif /* !defined(CONFIG_DTS) */
+ 
+ #if defined(CONFIG_DTS) && !defined(CUSTOMER_HW)
+-	wifi_plat_dev_probe_ret = platform_driver_register(&wifi_platform_dev_driver);
++	// wifi_plat_dev_probe_ret = platform_driver_register(&wifi_platform_dev_driver);
+ #endif /* CONFIG_DTS */
+ 
+ 	/* return probe function's return value if registeration succeeded */
+@@ -653,8 +654,14 @@ static int wifi_ctrlfunc_register_drv(void)
+ 
+ void wifi_ctrlfunc_unregister_drv(void)
+ {
++#ifndef CONFIG_DTS
+ 	wifi_adapter_info_t *adapter = NULL;
++#endif
+ 
++#if defined(CONFIG_DTS) && !defined(CUSTOMER_HW)
++	DHD_ERROR(("unregister wifi platform drivers\n"));
++	platform_driver_unregister(&wifi_platform_dev_driver);
++#else
+ #ifndef CUSTOMER_HW
+ 	struct device *dev1, *dev2;
+ 	dev1 = bus_find_device(&platform_bus_type, NULL, WIFI_PLAT_NAME, wifi_platdev_match);
+@@ -663,8 +670,13 @@ void wifi_ctrlfunc_unregister_drv(void)
+ 		if (dev1 == NULL && dev2 == NULL)
+ 			return;
+ #endif
+-
+ 	DHD_ERROR(("unregister wifi platform drivers\n"));
++#ifndef CUSTOMER_HW
++	if (dev1)
++		platform_driver_unregister(&wifi_platform_dev_driver);
++	if (dev2)
++		platform_driver_unregister(&wifi_platform_dev_driver_legacy);
++#endif
+ 
+ 	if (!dhd_wifi_platdata) {
+ 		goto done;
+@@ -676,15 +688,7 @@ void wifi_ctrlfunc_unregister_drv(void)
+ 			wifi_platform_set_power(adapter, FALSE, WIFI_TURNOFF_DELAY);
+ 		}
+ 		wifi_platform_bus_enumerate(adapter, FALSE);
+-	} else {
+-#ifndef CUSTOMER_HW
+-		if (dev1)
+-			platform_driver_unregister(&wifi_platform_dev_driver);
+-		if (dev2)
+-			platform_driver_unregister(&wifi_platform_dev_driver_legacy);
+-#endif
+ 	}
+-
+ // modify for compaibility
+ #if defined(BCMDHD_MODULAR) && defined(BOARD_MODULAR_INIT)
+ //	dhd_wlan_deinit();
+@@ -692,7 +696,8 @@ void wifi_ctrlfunc_unregister_drv(void)
+ #ifdef WBRC
+ 	wbrc_exit();
+ #endif /* WBRC */
+-#endif /* defined(BCMDHD_MODULAR) && defined(BOARD_MODULAR_INIT) */
++#endif /* defined(BCMDHD_MODULAR) && defined(BOARD_MODULAR_INIT)  */
++#endif /* !defined(CONFIG_DTS) */
+ 
+ #if defined(CUSTOMER_HW)
+ 	if (adapter)
+@@ -711,6 +716,7 @@ done:
+ 	}
+ }
+ 
++
+ #ifndef CUSTOMER_HW
+ static int bcmdhd_wifi_plat_dev_drv_probe(struct platform_device *pdev)
+ {
+@@ -719,7 +725,7 @@ static int bcmdhd_wifi_plat_dev_drv_probe(struct platform_device *pdev)
+ 	return dhd_wifi_platform_load();
+ }
+ 
+-static int bcmdhd_wifi_plat_dev_drv_remove(struct platform_device *pdev)
++static void bcmdhd_wifi_plat_dev_drv_remove(struct platform_device *pdev)
+ {
+ 	int i;
+ 	wifi_adapter_info_t *adapter;
+@@ -731,7 +737,6 @@ static int bcmdhd_wifi_plat_dev_drv_remove(struct platform_device *pdev)
+ 		wifi_platform_set_power(adapter, FALSE, WIFI_TURNOFF_DELAY);
+ 		wifi_platform_bus_enumerate(adapter, FALSE);
+ 	}
+-	return 0;
+ }
+ 
+ static struct platform_driver dhd_wifi_platform_dev_driver = {
+diff --git a/dhd_linux_rx.c b/dhd_linux_rx.c
+index a7d548d..493e9d7 100755
+--- a/dhd_linux_rx.c
++++ b/dhd_linux_rx.c
+@@ -83,7 +83,7 @@
+ #include <linux/rtc.h>
+ #include <linux/namei.h>
+ #include <asm/uaccess.h>
+-#include <asm/unaligned.h>
++#include <linux/unaligned.h>
+ #include <dhd_linux_priv.h>
+ 
+ #include <epivers.h>
+diff --git a/dhd_linux_tx.c b/dhd_linux_tx.c
+index 9270f60..7d0093d 100755
+--- a/dhd_linux_tx.c
++++ b/dhd_linux_tx.c
+@@ -82,7 +82,7 @@
+ #include <linux/rtc.h>
+ #include <linux/namei.h>
+ #include <asm/uaccess.h>
+-#include <asm/unaligned.h>
++#include <linux/unaligned.h>
+ #include <dhd_linux_priv.h>
+ 
+ #include <epivers.h>
+diff --git a/dhd_static_buf.c b/dhd_static_buf.c
+index d38eb99..0c42a31 100755
+--- a/dhd_static_buf.c
++++ b/dhd_static_buf.c
+@@ -10,8 +10,6 @@
+ #include <linux/delay.h>
+ #include <linux/err.h>
+ #include <linux/skbuff.h>
+-#include <linux/amlogic/wlan_plat.h>
+-#include <linux/amlogic/dhd_buf.h>
+ 
+ #define	DHD_STATIC_VERSION_STR		"101.10.591.36 (wlan=r892223-20231107-1)"
+ #define STATIC_ERROR_LEVEL	BIT(0)
+diff --git a/wl_cfgvif.c b/wl_cfgvif.c
+index a0a47e8..7428594 100755
+--- a/wl_cfgvif.c
++++ b/wl_cfgvif.c
+@@ -6109,7 +6109,9 @@ wl_cfg80211_ch_switch_notify(struct net_device *dev, uint16 chanspec, struct wip
+ 
+ #if (LINUX_VERSION_CODE >= KERNEL_VERSION (3, 8, 0))
+ 	freq = chandef.chan ? chandef.chan->center_freq : chandef.center_freq1;
+-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 3, 0) || \
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 9, 0))
++	cfg80211_ch_switch_notify(dev, &chandef, 0);
++#elif LINUX_VERSION_CODE >= KERNEL_VERSION(6, 3, 0) || \
+ 		((ANDROID_VERSION >= 14) && (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 144))) || \
+ 		((ANDROID_VERSION == 13) && (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 94)))
+ 	cfg80211_ch_switch_notify(dev, &chandef, 0, 0);
+-- 
+2.51.1
+

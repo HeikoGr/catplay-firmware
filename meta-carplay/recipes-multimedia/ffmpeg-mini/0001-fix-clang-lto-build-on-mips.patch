@@ -1,0 +1,36 @@
+Date: Sun, 28 Sep 2025 12:01:51 +0200
+Subject: [PATCH] Fix CLang-LTO build on MIPS
+
+This does not affect ARM, because it seems like ARM can create .o files
+with both LLVM bitcode and normal code inside, and MIPS in the same setup only ships the LLVM bitcode,
+creatings false positives in tests that shouldn't use this mode.
+
+---
+ configure | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/configure b/configure
+index 732de59292..5fc76e2280 100755
+--- a/configure
++++ b/configure
+@@ -1061,7 +1061,7 @@ test_cc(){
+     log test_cc "$@"
+     cat > $TMPC
+     log_file $TMPC
+-    test_cmd $cc $CPPFLAGS $CFLAGS "$@" $CC_C $(cc_o $TMPO) $TMPC
++    test_cmd $cc $CPPFLAGS $CFLAGS -fno-lto "$@" $CC_C $(cc_o $TMPO) $TMPC
+ }
+ 
+ test_cxx(){
+@@ -1232,7 +1232,7 @@ test_ld(){
+     test_$type $($cflags_filter $flags) || return
+     flags=$($ldflags_filter $flags)
+     libs=$($ldflags_filter $libs)
+-    test_cmd $ld $LDFLAGS $LDEXEFLAGS $flags $(ld_o $TMPE) $TMPO $libs $extralibs
++    test_cmd $ld $LDFLAGS $LDEXEFLAGS $flags -fno-lto $(ld_o $TMPE) $TMPO $libs $extralibs
+ }
+ 
+ check_ld(){
+-- 
+2.51.0
+

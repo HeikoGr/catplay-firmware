@@ -1,0 +1,50 @@
+Date: Mon, 7 Jul 2025 07:04:32 +0200
+Subject: [PATCH] Unlock experimental LTO for arm32
+
+---
+ arch/Kconfig                      | 2 --
+ arch/arm/Kconfig                  | 2 ++
+ arch/arm/boot/compressed/Makefile | 1 +
+ 3 files changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/arch/Kconfig b/arch/Kconfig
+index bd9f095d6..e6184e54e 100644
+--- a/arch/Kconfig
++++ b/arch/Kconfig
+@@ -750,8 +750,6 @@ config ARCH_SUPPORTS_LTO_CLANG_THIN
+ config HAS_LTO_CLANG
+ 	def_bool y
+ 	depends on CC_IS_CLANG && LD_IS_LLD && AS_IS_LLVM
+-	depends on $(success,$(NM) --help | head -n 1 | grep -qi llvm)
+-	depends on $(success,$(AR) --help | head -n 1 | grep -qi llvm)
+ 	depends on ARCH_SUPPORTS_LTO_CLANG
+ 	depends on !FTRACE_MCOUNT_USE_RECORDMCOUNT
+ 	# https://github.com/ClangBuiltLinux/linux/issues/1721
+diff --git a/arch/arm/Kconfig b/arch/arm/Kconfig
+index d0040fb67..65b47357b 100644
+--- a/arch/arm/Kconfig
++++ b/arch/arm/Kconfig
+@@ -37,6 +37,8 @@ config ARM
+ 	select ARCH_OPTIONAL_KERNEL_RWX_DEFAULT if CPU_V7
+ 	select ARCH_NEED_CMPXCHG_1_EMU if CPU_V6
+ 	select ARCH_SUPPORTS_ATOMIC_RMW
++	select ARCH_SUPPORTS_LTO_CLANG if CPU_LITTLE_ENDIAN
++	select ARCH_SUPPORTS_LTO_CLANG_THIN
+ 	select ARCH_SUPPORTS_CFI_CLANG
+ 	select ARCH_SUPPORTS_HUGETLBFS if ARM_LPAE
+ 	select ARCH_SUPPORTS_PER_VMA_LOCK
+diff --git a/arch/arm/boot/compressed/Makefile b/arch/arm/boot/compressed/Makefile
+index 945b5975f..fc7fb1573 100644
+--- a/arch/arm/boot/compressed/Makefile
++++ b/arch/arm/boot/compressed/Makefile
+@@ -92,6 +92,7 @@ OBJS	+= lib1funcs.o ashldi3.o bswapsdi2.o
+ targets       := vmlinux vmlinux.lds piggy_data piggy.o \
+ 		 head.o $(OBJS)
+ 
++KBUILD_CFLAGS := $(filter-out $(CC_FLAGS_LTO), $(KBUILD_CFLAGS))
+ KBUILD_CFLAGS += -DDISABLE_BRANCH_PROFILING
+ 
+ ccflags-y := -fpic $(call cc-option,-mno-single-pic-base,) -fno-builtin \
+-- 
+2.43.0
+

@@ -1,0 +1,34 @@
+Upstream-Status: Inappropriate [hack]
+--- a/src/log.h
++++ b/src/log.h
+@@ -2,25 +2,10 @@
+ 					struct btd_debug_desc *stop);
+ 
+ /**
+- * DBG:
+- * @fmt: format string
+- * @arg...: list of arguments
+- *
+- * Simple macro around btd_debug() which also include the function
+- * name it is called in.
++ * Logging macros disabled.
+  */
+-#define DBG_IDX(idx, fmt, arg...) do { \
+-	static struct btd_debug_desc __btd_debug_desc \
+-	__attribute__((used, section("__debug"), aligned(8))) = { \
+-		.file = __FILE__, .flags = BTD_DEBUG_FLAG_DEFAULT, \
+-	}; \
+-	if (__btd_debug_desc.flags & BTD_DEBUG_FLAG_PRINT) \
+-		btd_debug(idx, fmt, ## arg); \
+-} while (0)
++#define DBG_IDX(idx, fmt, arg...) do { } while (0)
+ 
+-#define DBG(fmt, arg...) \
+-	DBG_IDX(0xffff, "%s:%s() " fmt, __FILE__, __func__, ## arg)
+-#define error(fmt, arg...) \
+-	btd_error(0xffff, "%s:%s() " fmt, __FILE__, __func__, ## arg)
+-#define warn(fmt, arg...) \
+-	btd_warn(0xffff, "%s:%s() " fmt, __FILE__, __func__, ## arg)
++#define DBG(fmt, arg...) DBG_IDX(0xffff, fmt, ## arg)
++#define error(fmt, arg...) DBG_IDX(0xffff, fmt, ## arg)
++#define warn(fmt, arg...) DBG_IDX(0xffff, fmt, ## arg)

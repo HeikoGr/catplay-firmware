@@ -1,0 +1,40 @@
+#include "imx6ul-c2a.dtsi"
+
+&{/} {
+	reg_wifi: regulator-wifi {
+		compatible = "regulator-fixed";
+		regulator-name = "wlreg_on";
+		gpio = <&gpio1 5 GPIO_ACTIVE_LOW>;
+		enable-active-low;
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		regulator-always-on;
+	};
+};
+
+&uart3 { /* bluetooth */
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_uart3>;
+	uart-has-rtscts;
+	status = "okay";
+
+	bluetooth {
+		compatible = "realtek,rtl8822cs-bt";
+		enable-gpios = <&gpio1 1 GPIO_ACTIVE_LOW>; /* as seen in init_gpio.sh */
+	};
+};
+
+&usdhc1 { /* Wi-Fi */
+	pinctrl-names = "default", "state_100mhz", "state_200mhz";
+	pinctrl-0 = <&pinctrl_usdhc1>;
+	pinctrl-1 = <&pinctrl_usdhc1_100mhz>;
+	pinctrl-2 = <&pinctrl_usdhc1_200mhz>;
+	non-removable;
+	no-1-8-v;
+	keep-power-in-suspend;
+	wakeup-source;
+	enable-sdio-wakeup; /* realtek */
+	
+	vmmc-supply = <&reg_wifi>;
+	status = "okay";
+};

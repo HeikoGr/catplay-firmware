@@ -1,0 +1,24 @@
+Date: Sun, 7 Sep 2025 19:32:48 +0200
+Subject: [PATCH] phy-mxs-usb: disable charger detection, we don't need it
+
+---
+ drivers/usb/phy/phy-mxs-usb.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/drivers/usb/phy/phy-mxs-usb.c b/drivers/usb/phy/phy-mxs-usb.c
+index cc4156c1b..fb0b1850f 100644
+--- a/drivers/usb/phy/phy-mxs-usb.c
++++ b/drivers/usb/phy/phy-mxs-usb.c
+@@ -728,6 +728,9 @@ static enum usb_charger_type mxs_phy_charger_detect(struct usb_phy *phy)
+ 	void __iomem *base = phy->io_priv;
+ 	enum usb_charger_type chgr_type = UNKNOWN_TYPE;
+ 
++	dev_info(mxs_phy->phy.dev, "refusing to perform mxs_phy_charger_detect\n");
++	return UNKNOWN_TYPE;
++
+ 	if (!regmap)
+ 		return UNKNOWN_TYPE;
+ 
+-- 
+2.51.0
+

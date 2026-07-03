@@ -1,0 +1,1184 @@
+diff --git a/aic8800_bsp/aic_bsp_driver.c b/aic8800_bsp/aic_bsp_driver.c
+index f723a22..1ca2a00 100644
+--- a/aic8800_bsp/aic_bsp_driver.c
++++ b/aic8800_bsp/aic_bsp_driver.c
+@@ -47,7 +47,7 @@ static void cmd_complete(struct rwnx_cmd_mgr *cmd_mgr, struct rwnx_cmd *cmd)
+ 	//printk("cmdcmp\n");
+ 	lockdep_assert_held(&cmd_mgr->lock);
+ 
+-	list_del(&cmd->list);
++	list_del_init(&cmd->list);
+ 	cmd_mgr->queue_sz--;
+ 
+ 	cmd->flags |= RWNX_CMD_FLAG_DONE;
+@@ -61,6 +61,20 @@ static void cmd_complete(struct rwnx_cmd_mgr *cmd_mgr, struct rwnx_cmd *cmd)
+ 	}
+ }
+ 
++static bool cmd_mgr_list_sane(struct rwnx_cmd_mgr *cmd_mgr)
++{
++	struct list_head *head = &cmd_mgr->cmds;
++
++	if (!head->next || !head->prev)
++		return false;
++	if (head->next->prev != head)
++		return false;
++	if (head->prev->next != head)
++		return false;
++
++	return true;
++}
++
+ static int cmd_mgr_queue(struct rwnx_cmd_mgr *cmd_mgr, struct rwnx_cmd *cmd)
+ {
+ 	bool defer_push = false;
+@@ -68,6 +82,17 @@ static int cmd_mgr_queue(struct rwnx_cmd_mgr *cmd_mgr, struct rwnx_cmd *cmd)
+ 
+ 	spin_lock_bh(&cmd_mgr->lock);
+ 
++	/* If OOM or memory corruption damaged the list links, stop queueing safely. */
++	if (unlikely(!cmd_mgr_list_sane(cmd_mgr))) {
++		printk(KERN_CRIT "cmd queue list corrupted, resetting manager state\n");
++		INIT_LIST_HEAD(&cmd_mgr->cmds);
++		cmd_mgr->queue_sz = 0;
++		cmd_mgr->state = RWNX_CMD_MGR_STATE_CRASHED;
++		cmd->result = -EPIPE;
++		spin_unlock_bh(&cmd_mgr->lock);
++		return -EPIPE;
++	}
++
+ 	if (cmd_mgr->state == RWNX_CMD_MGR_STATE_CRASHED) {
+ 		printk(KERN_CRIT"cmd queue crashed\n");
+ 		cmd->result = -EPIPE;
+@@ -101,6 +126,14 @@ static int cmd_mgr_queue(struct rwnx_cmd_mgr *cmd_mgr, struct rwnx_cmd *cmd)
+ 	if (!(cmd->flags & RWNX_CMD_FLAG_NONBLOCK))
+ 		init_completion(&cmd->complete);
+ 
++	if (unlikely((sizeof(struct lmac_msg) + cmd->a2e_msg->param_len + 8) > CMD_BUF_MAX)) {
++		printk(KERN_CRIT "cmd too large for tx buffer: id=0x%x len=%u max=%u\n",
++		       cmd->a2e_msg->id, (unsigned int)(sizeof(struct lmac_msg) + cmd->a2e_msg->param_len + 8), CMD_BUF_MAX);
++		cmd->result = -EMSGSIZE;
++		spin_unlock_bh(&cmd_mgr->lock);
++		return -EMSGSIZE;
++	}
++
+ 	list_add_tail(&cmd->list, &cmd_mgr->cmds);
+ 	cmd_mgr->queue_sz++;
+ 	spin_unlock_bh(&cmd_mgr->lock);
+@@ -110,6 +143,7 @@ static int cmd_mgr_queue(struct rwnx_cmd_mgr *cmd_mgr, struct rwnx_cmd *cmd)
+ 		rwnx_set_cmd_tx((void *)(cmd_mgr->sdiodev), cmd->a2e_msg, sizeof(struct lmac_msg) + cmd->a2e_msg->param_len);
+ 		//rwnx_ipc_msg_push(rwnx_hw, cmd, RWNX_CMD_A2EMSG_LEN(cmd->a2e_msg));
+ 		kfree(cmd->a2e_msg);
++		cmd->a2e_msg = NULL;
+ 	} else {
+ 		//WAKE_CMD_WORK(cmd_mgr);
+ 		printk("ERR: never defer push!!!!");
+@@ -259,6 +293,13 @@ void rwnx_set_cmd_tx(void *dev, struct lmac_msg *msg, uint len)
+ 	struct aicwf_bus *bus = sdiodev->bus_if;
+ 	u8 *buffer = bus->cmd_buf;
+ 	u16 index = 0;
++	u32 total_len = len + 8;
++
++	if (unlikely(total_len > CMD_BUF_MAX)) {
++		printk(KERN_CRIT "cmd too large: total=%u, max=%u, id=0x%x, param_len=%u\n",
++		       total_len, CMD_BUF_MAX, msg->id, msg->param_len);
++		return;
++	}
+ 
+ 	memset(buffer, 0, CMD_BUF_MAX);
+ 	buffer[0] = (len+4) & 0x00ff;
+@@ -340,6 +381,9 @@ static int rwnx_send_msg(struct aic_sdio_dev *sdiodev, const void *msg_params,
+ 
+ 	nonblock = 0;
+ 	cmd = kzalloc(sizeof(struct rwnx_cmd), nonblock ? GFP_ATOMIC : GFP_KERNEL);
++	if (!cmd)
++		return -ENOMEM;
++	INIT_LIST_HEAD(&cmd->list);
+ 	cmd->result  = -EINTR;
+ 	cmd->id      = msg->id;
+ 	cmd->reqid   = reqid;
+@@ -353,6 +397,11 @@ static int rwnx_send_msg(struct aic_sdio_dev *sdiodev, const void *msg_params,
+ 	if (reqcfm) {
+ 		cmd->flags &= ~RWNX_CMD_FLAG_WAIT_ACK; // we don't need ack any more
+ 		ret = sdiodev->cmd_mgr.queue(&sdiodev->cmd_mgr, cmd);
++		if (ret) {
++			if (cmd->a2e_msg)
++				kfree(cmd->a2e_msg);
++			kfree(cmd);
++		}
+ 	} else {
+ 		rwnx_set_cmd_tx((void *)(sdiodev), cmd->a2e_msg, sizeof(struct lmac_msg) + cmd->a2e_msg->param_len);
+ 	}
+@@ -375,6 +424,13 @@ int rwnx_send_dbg_mem_block_write_req(struct aic_sdio_dev *sdiodev, u32 mem_addr
+ 	if (!mem_blk_write_req)
+ 		return -ENOMEM;
+ 
++	if (unlikely(mem_size > sizeof(mem_blk_write_req->memdata))) {
++		printk(KERN_CRIT "dbg_mem_block_write_req too large: %u > %zu\n",
++		       mem_size, sizeof(mem_blk_write_req->memdata));
++		kfree(container_of((void *)mem_blk_write_req, struct lmac_msg, param));
++		return -EINVAL;
++	}
++
+ 	/* Set parameters for the DBG_MEM_BLOCK_WRITE_REQ message */
+ 	mem_blk_write_req->memaddr = mem_addr;
+ 	mem_blk_write_req->memsize = mem_size;
+diff --git a/aic8800_bsp/aicsdio.c b/aic8800_bsp/aicsdio.c
+index 83f45cb..940d631 100644
+--- a/aic8800_bsp/aicsdio.c
++++ b/aic8800_bsp/aicsdio.c
+@@ -1368,6 +1368,12 @@ static int aicwf_sdio_bus_start(struct device *dev)
+ 	struct aic_sdio_dev *sdiodev = bus_if->bus_priv.sdio;
+ 	int ret = 0;
+ 
++	/*
++	 * Mark bus UP before enabling IRQs to avoid dropping early responses
++	 * arriving immediately after interrupt unmask.
++	 */
++	bus_if->state = BUS_UP_ST;
++
+ 	if(sdiodev->chipid == PRODUCT_ID_AIC8801){
+ 		sdio_claim_host(sdiodev->func);
+ 		sdio_claim_irq(sdiodev->func, aicwf_sdio_hal_irqhandler);
+@@ -1416,7 +1422,6 @@ static int aicwf_sdio_bus_start(struct device *dev)
+ 			sdio_err("intr register failed:%d\n", ret);
+ 	}
+ 
+-	bus_if->state = BUS_UP_ST;
+ 	return ret;
+ }
+ 
+@@ -1443,15 +1448,27 @@ int aicwf_sdio_busrx_thread(void *data)
+ {
+ 	struct aicwf_rx_priv *rx_priv = (struct aicwf_rx_priv *)data;
+ 	struct aicwf_bus *bus_if = rx_priv->sdiodev->bus_if;
++	int ret;
++	int wait_ret;
+ 
+ 	while (1) {
+ 		if (kthread_should_stop()) {
+ 			sdio_err("sdio busrx thread stop\n");
+ 			break;
+ 		}
+-		if (!wait_for_completion_interruptible(&bus_if->busrx_trgg)) {
+-			aicwf_process_rxframes(rx_priv);
++		wait_ret = wait_for_completion_interruptible(&bus_if->busrx_trgg);
++		if (wait_ret) {
++			if (!kthread_should_stop())
++				usleep_range(1000, 2000);
++			continue;
+ 		}
++		/* Ignore spurious wakeups with no queued RX frames. */
++		if (atomic_read(&rx_priv->rx_cnt) <= 0)
++			continue;
++		aicwf_process_rxframes(rx_priv);
++		ret = aicwf_sdio_writeb(rx_priv->sdiodev, rx_priv->sdiodev->sdio_reg.intr_config_reg, 0x07);
++		if (ret)
++			sdio_err("intr unmask failed:%d\n", ret);
+ 	}
+ 
+ 	return 0;
+@@ -1499,11 +1512,12 @@ static void aicwf_sdio_enq_rxpkt(struct aic_sdio_dev *sdiodev, struct sk_buff *p
+ void aicwf_sdio_hal_irqhandler(struct sdio_func *func)
+ {
+ 	struct aicwf_bus *bus_if = dev_get_drvdata(&func->dev);
+-	struct aic_sdio_dev *sdiodev = bus_if->bus_priv.sdio;
++	struct aic_sdio_dev *sdiodev;
+ 	u8 intstatus = 0;
+ 	u8 byte_len = 0;
+ 	struct sk_buff *pkt = NULL;
+ 	int ret;
++	bool rx_kick = false;
+ 
+     //AICWFDBG(LOGDEBUG,"%s bsp enter \r\n", __func__);
+ 
+@@ -1512,14 +1526,25 @@ void aicwf_sdio_hal_irqhandler(struct sdio_func *func)
+         return;
+     }
+ 
+-	if (!bus_if || bus_if->state == BUS_DOWN_ST) {
++	if (!bus_if) {
+ 		sdio_err("bus err\n");
+ 		return;
+ 	}
++	sdiodev = bus_if->bus_priv.sdio;
++	if (!sdiodev) {
++		sdio_err("sdio dev null\n");
++		return;
++	}
++	if (bus_if->state == BUS_DOWN_ST)
++		return;
+ 
+     if (sdiodev->chipid  == PRODUCT_ID_AIC8801 || sdiodev->chipid  == PRODUCT_ID_AIC8800DC ||
+         sdiodev->chipid  == PRODUCT_ID_AIC8800DW) {
+     	ret = aicwf_sdio_readb(sdiodev, sdiodev->sdio_reg.block_cnt_reg, &intstatus);
++		if (ret) {
++			sdio_err("block_cnt read failed: ret=%d\n", ret);
++			return;
++		}
+ 
+     	while(intstatus){
+     	    sdiodev->rx_priv->data_len = intstatus * SDIOWIFI_FUNC_BLOCKSIZE;
+@@ -1537,75 +1562,89 @@ void aicwf_sdio_hal_irqhandler(struct sdio_func *func)
+     	#endif
+     	    }
+ 
+-    	    if (pkt)
+-    	        aicwf_sdio_enq_rxpkt(sdiodev, pkt);
++	    	    if (pkt)
++			{
++	    	        aicwf_sdio_enq_rxpkt(sdiodev, pkt);
++				rx_kick = true;
++			}
+ 
+     	    ret = aicwf_sdio_readb(sdiodev, sdiodev->sdio_reg.block_cnt_reg, &intstatus);
++			if (ret) {
++				sdio_err("block_cnt read failed in loop: ret=%d\n", ret);
++				break;
++			}
+     	}
+     }else if (sdiodev->chipid  == PRODUCT_ID_AIC8800D80 ||
+-			sdiodev->chipid == PRODUCT_ID_AIC8800D80N ||
+-			sdiodev->chipid == PRODUCT_ID_AIC8800D80WN ||
+-			sdiodev->chipid == PRODUCT_ID_AIC8800D80X2) {
+-        do {
+-            ret = aicwf_sdio_readb(sdiodev, sdiodev->sdio_reg.misc_int_status_reg, &intstatus);
+-            if (!ret) {
+-                break;
+-            }
+-            sdio_err("ret=%d, intstatus=%x\r\n",ret, intstatus);
+-        } while (1);
+-        if (intstatus & SDIO_OTHER_INTERRUPT) {
+-            u8 int_pending;
+-            ret = aicwf_sdio_readb(sdiodev, sdiodev->sdio_reg.sleep_reg, &int_pending);
+-            if (ret < 0) {
+-                sdio_err("reg:%d read failed!\n", sdiodev->sdio_reg.sleep_reg);
+-            }
+-            int_pending &= ~0x01; // dev to host soft irq
+-            ret = aicwf_sdio_writeb(sdiodev, sdiodev->sdio_reg.sleep_reg, int_pending);
+-            if (ret < 0) {
+-                sdio_err("reg:%d write failed!\n", sdiodev->sdio_reg.sleep_reg);
+-            }
+-        }
++              sdiodev->chipid  == PRODUCT_ID_AIC8800D80N ||
++              sdiodev->chipid  == PRODUCT_ID_AIC8800D80WN ||
++              sdiodev->chipid  == PRODUCT_ID_AIC8800D80X2) {
++		int loop;
++		for (;;) { /* for (loop = 0; loop < 32; loop++) { */
++			ret = aicwf_sdio_readb(sdiodev, sdiodev->sdio_reg.misc_int_status_reg, &intstatus);
++			if (ret) {
++				sdio_err("misc_int_status read failed: ret=%d\n", ret);
++				break;
++			}
++			if (!intstatus)
++				break;
+ 
+-        if (intstatus > 0) {
+-            uint8_t intmaskf2 = intstatus | (0x1UL << 3);
+-            if (intmaskf2 > 120U) { // func2
+-                if (intmaskf2 == 127U) { // byte mode
+-                    //aicwf_sdio_intr_get_len_bytemode(sdiodev, &byte_len, 1);//byte_len must<= 128
+-                    aicwf_sdio_intr_get_len_bytemode(sdiodev, &byte_len);//byte_len must<= 128
+-                    sdio_info("byte mode len=%d\r\n", byte_len);
+-                    pkt = aicwf_sdio_readframes(sdiodev, 1);
+-                } else { // block mode
+-                    sdiodev->rx_priv->data_len = (intstatus & 0x7U) * SDIOWIFI_FUNC_BLOCKSIZE;
+-                    pkt = aicwf_sdio_readframes(sdiodev, 1);
+-                }
+-            } else { // func1
+-                if (intstatus == 120U) { // byte mode
+-                    //aicwf_sdio_intr_get_len_bytemode(sdiodev, &byte_len, 0);//byte_len must<= 128
+-                    aicwf_sdio_intr_get_len_bytemode(sdiodev, &byte_len);//byte_len must<= 128
+-                    sdio_info("byte mode len=%d\r\n", byte_len);
+-                    pkt = aicwf_sdio_readframes(sdiodev, 0);
+-                } else { // block mode
+-                    sdiodev->rx_priv->data_len = (intstatus & 0x7FU) * SDIOWIFI_FUNC_BLOCKSIZE;
+-                    pkt = aicwf_sdio_readframes(sdiodev, 0);
+-                }
+-    		}
+-    } else {
+-    	#ifndef CONFIG_PLATFORM_ALLWINNER
+-            sdio_err("Interrupt but no data\n");
+-    	#endif
+-        }
++			if (intstatus & SDIO_OTHER_INTERRUPT) {
++				u8 int_pending;
++				ret = aicwf_sdio_readb(sdiodev, sdiodev->sdio_reg.sleep_reg, &int_pending);
++				if (ret < 0) {
++					sdio_err("reg:%d read failed!\n", sdiodev->sdio_reg.sleep_reg);
++				}
++				int_pending &= ~0x01; // dev to host soft irq
++				ret = aicwf_sdio_writeb(sdiodev, sdiodev->sdio_reg.sleep_reg, int_pending);
++				if (ret < 0) {
++					sdio_err("reg:%d write failed!\n", sdiodev->sdio_reg.sleep_reg);
++				}
++			}
++
++			pkt = NULL;
++			if (intstatus > 0) {
++				uint8_t intmaskf2 = intstatus | (0x1UL << 3);
++				if (intmaskf2 > 120U) { // func2
++					if (intmaskf2 == 127U) { // byte mode
++						aicwf_sdio_intr_get_len_bytemode(sdiodev, &byte_len);//byte_len must<= 128
++						sdio_info("byte mode len=%d\r\n", byte_len);
++						pkt = aicwf_sdio_readframes(sdiodev, 1);
++					} else { // block mode
++						sdiodev->rx_priv->data_len = (intstatus & 0x7U) * SDIOWIFI_FUNC_BLOCKSIZE;
++						pkt = aicwf_sdio_readframes(sdiodev, 1);
++					}
++				} else { // func1
++					if (intstatus == 120U) { // byte mode
++						aicwf_sdio_intr_get_len_bytemode(sdiodev, &byte_len);//byte_len must<= 128
++						sdio_info("byte mode len=%d\r\n", byte_len);
++						pkt = aicwf_sdio_readframes(sdiodev, 0);
++					} else { // block mode
++						sdiodev->rx_priv->data_len = (intstatus & 0x7FU) * SDIOWIFI_FUNC_BLOCKSIZE;
++						pkt = aicwf_sdio_readframes(sdiodev, 0);
++					}
++				}
++			}
+ 
+-        if (pkt)
+-            aicwf_sdio_enq_rxpkt(sdiodev, pkt);
++			if (pkt) {
++				aicwf_sdio_enq_rxpkt(sdiodev, pkt);
++				rx_kick = true;
++			}
++		}
+     }
+ 
+-	complete(&bus_if->busrx_trgg);
++	if (rx_kick)
++	{
++		ret = aicwf_sdio_writeb(sdiodev, sdiodev->sdio_reg.intr_config_reg, 0x00);
++		if (ret)
++			sdio_err("intr mask failed:%d\n", ret);
++		complete(&bus_if->busrx_trgg);
++	}
+ }
+ 
+ void aicwf_sdio_hal_irqhandler_func2(struct sdio_func *func)
+ {
+     struct aicwf_bus *bus_if = dev_get_drvdata(&func->dev);
+-    struct aic_sdio_dev *sdiodev = bus_if->bus_priv.sdio;
++    struct aic_sdio_dev *sdiodev;
+     u8 intstatus = 0;
+     u8 byte_len = 0;
+     #ifdef CONFIG_PREALLOC_RX_SKB
+@@ -1614,11 +1648,19 @@ void aicwf_sdio_hal_irqhandler_func2(struct sdio_func *func)
+ 	struct sk_buff *pkt = NULL;
+ 	#endif
+     int ret;
++    bool rx_kick = false;
+ 
+-    if (!bus_if || bus_if->state == BUS_DOWN_ST) {
++    if (!bus_if) {
+         sdio_err("bus err\n");
+         return;
+     }
++    sdiodev = bus_if->bus_priv.sdio;
++    if (!sdiodev) {
++        sdio_err("sdio dev null\n");
++        return;
++    }
++    if (bus_if->state == BUS_DOWN_ST)
++        return;
+ 
+ 	#ifdef CONFIG_PREALLOC_RX_SKB
+ 	if (list_empty(&aic_rx_buff_list.rxbuff_list)) {
+@@ -1628,6 +1670,10 @@ void aicwf_sdio_hal_irqhandler_func2(struct sdio_func *func)
+ 	#endif
+ 
+     ret = aicwf_sdio_readb_func2(sdiodev, sdiodev->sdio_reg.block_cnt_reg, &intstatus);
++    if (ret) {
++        sdio_err("func2 block_cnt read failed: ret=%d\n", ret);
++        return;
++    }
+ 
+ 	while(intstatus) {
+ 	    sdiodev->rx_priv->data_len = intstatus * SDIOWIFI_FUNC_BLOCKSIZE;
+@@ -1648,11 +1694,22 @@ void aicwf_sdio_hal_irqhandler_func2(struct sdio_func *func)
+ 
+ 	    if (pkt){
+ 	        aicwf_sdio_enq_rxpkt(sdiodev, pkt);
++	        rx_kick = true;
+ 	    }
+ 		ret = aicwf_sdio_readb_func2(sdiodev, sdiodev->sdio_reg.block_cnt_reg, &intstatus);
++		if (ret) {
++			sdio_err("func2 block_cnt read failed in loop: ret=%d\n", ret);
++			break;
++		}
+ 	}
+ 
+-	complete(&bus_if->busrx_trgg);
++	if (rx_kick)
++	{
++		ret = aicwf_sdio_writeb_func2(sdiodev, sdiodev->sdio_reg.intr_config_reg, 0x00);
++		if (ret)
++			sdio_err("func2 intr mask failed:%d\n", ret);
++		complete(&bus_if->busrx_trgg);
++	}
+ }
+ 
+ #if defined(CONFIG_SDIO_PWRCTRL)
+@@ -2117,4 +2169,3 @@ EXPORT_SYMBOL(get_sdio_func);
+ EXPORT_SYMBOL(set_irq_handler);
+ EXPORT_SYMBOL(get_adap_test);
+ EXPORT_SYMBOL(get_fdrv_no_reg_sdio);
+-
+diff --git a/aic8800_bsp/aicsdio_txrxif.c b/aic8800_bsp/aicsdio_txrxif.c
+index 84e6ca7..758d1bf 100644
+--- a/aic8800_bsp/aicsdio_txrxif.c
++++ b/aic8800_bsp/aicsdio_txrxif.c
+@@ -85,10 +85,17 @@ void aicwf_bus_deinit(struct device *dev)
+ 	}
+ 
+ 	if (bus_if->bustx_thread) {
+-		complete_all(&bus_if->bustx_trgg);
++		complete(&bus_if->bustx_trgg);
+ 		kthread_stop(bus_if->bustx_thread);
+ 		bus_if->bustx_thread = NULL;
+ 	}
++
++	/* Stop RX thread as well in bus deinit to avoid runaway loop on teardown paths. */
++	if (bus_if->busrx_thread) {
++		complete(&bus_if->busrx_trgg);
++		kthread_stop(bus_if->busrx_thread);
++		bus_if->busrx_thread = NULL;
++	}
+ }
+ 
+ void aicwf_frame_tx(void *dev, struct sk_buff *skb)
+@@ -169,6 +176,7 @@ int aicwf_process_rxframes(struct aicwf_rx_priv *rx_priv)
+ 			break;
+ 		}
+ 		while (aicwf_another_ptk(skb)) {
++			skb_inblock = NULL;
+ 			data = skb->data;
+ 			pkt_len = (*skb->data | (*(skb->data + 1) << 8));
+ 
+@@ -192,6 +200,8 @@ int aicwf_process_rxframes(struct aicwf_rx_priv *rx_priv)
+ 				#if 0
+ 				rwnx_rxdataind_aicwf(rx_priv->sdiodev->rwnx_hw, skb_inblock, (void *)rx_priv);
+ 				#endif
++				dev_kfree_skb(skb_inblock);
++				skb_inblock = NULL;
+ 				skb_pull(skb, adjust_len);
+ 			} else { //  type : config
+ 				aggr_len = pkt_len;
+@@ -216,12 +226,12 @@ int aicwf_process_rxframes(struct aicwf_rx_priv *rx_priv)
+ 				if ((*(skb_inblock->data + 2) & 0x7f) == SDIO_TYPE_CFG_DATA_CFM)
+ 					aicwf_sdio_host_tx_cfm_handler(&(rx_priv->sdiodev->rwnx_hw->sdio_env), (u32 *)(skb_inblock->data + 4));
+ 				#endif
++				dev_kfree_skb(skb_inblock);
++				skb_inblock = NULL;
+ 				skb_pull(skb, adjust_len+4);
+ 			}
+ 		}
+ 
+-		/* skb_inblock no used currently, just free it! */
+-		dev_kfree_skb(skb_inblock);
+ 		dev_kfree_skb(skb);
+ 		atomic_dec(&rx_priv->rx_cnt);
+ 	}
+@@ -292,7 +302,7 @@ static void aicwf_recvframe_queue_deinit(struct list_head *q)
+ void aicwf_rx_deinit(struct aicwf_rx_priv *rx_priv)
+ {
+ 	if (rx_priv->sdiodev->bus_if->busrx_thread) {
+-		complete_all(&rx_priv->sdiodev->bus_if->busrx_trgg);
++		complete(&rx_priv->sdiodev->bus_if->busrx_trgg);
+ 		kthread_stop(rx_priv->sdiodev->bus_if->busrx_thread);
+ 		rx_priv->sdiodev->bus_if->busrx_thread = NULL;
+ 	}
+@@ -460,5 +470,3 @@ bool aicwf_frame_enq(struct device *dev, struct frame_queue *q, struct sk_buff *
+ 
+ 	return p != NULL;
+ }
+-
+-
+diff --git a/aic8800_fdrv/aicwf_sdio.c b/aic8800_fdrv/aicwf_sdio.c
+index bbd54a0..69e9c68 100644
+--- a/aic8800_fdrv/aicwf_sdio.c
++++ b/aic8800_fdrv/aicwf_sdio.c
+@@ -2409,13 +2409,22 @@ void aicwf_sdio_aggrbuf_reset(struct aicwf_tx_priv *tx_priv)
+ }
+ 
+ extern void set_irq_handler(void *fn);
++static int aicwf_sdio_irq_state_fence(struct aic_sdio_dev *sdiodev, const char *tag);
+ 
+ static int aicwf_sdio_bus_start(struct device *dev)
+ {
+ 	struct aicwf_bus *bus_if = dev_get_drvdata(dev);
+ 	struct aic_sdio_dev *sdiodev = bus_if->bus_priv.sdio;
+ 	int ret = 0;
++	int fence_ret;
+ 
++	bus_if->state = BUS_UP_ST;
++	ret = aicwf_sdio_writeb(sdiodev, sdiodev->sdio_reg.intr_config_reg, 0x00);
++	if (ret)
++		sdio_err("intr mask failed:%d\n", ret);
++	fence_ret = aicwf_sdio_irq_state_fence(sdiodev, "bus_start-pre");
++	if (fence_ret)
++		sdio_err("irq pre-fence failed:%d\n", fence_ret);
+ 
+ 	sdio_claim_host(sdiodev->func);
+ #ifndef CONFIG_FDRV_NO_REG_SDIO
+@@ -2439,12 +2448,13 @@ static int aicwf_sdio_bus_start(struct device *dev)
+ 
+ 
+ 	//enable sdio interrupt
++	fence_ret = aicwf_sdio_irq_state_fence(sdiodev, "bus_start-post");
++	if (fence_ret)
++		sdio_err("irq post-fence failed:%d\n", fence_ret);
+ 	ret = aicwf_sdio_writeb(sdiodev, sdiodev->sdio_reg.intr_config_reg, 0x07);
+ 	if (ret != 0)
+ 		sdio_err("intr register failed:%d\n", ret);
+ 
+-	bus_if->state = BUS_UP_ST;
+-
+ 	return ret;
+ }
+ 
+@@ -2524,12 +2534,10 @@ int sdio_busirq_thread(void *data){
+     
+     
+     while (1) {
+-#if 0
+             if (kthread_should_stop()) {
+                 AICWFDBG(LOGERROR, "sdio busirq thread stop\n");
+                 break;
+             }
+-#endif
+             if(!wait_for_completion_timeout(&bus_if->busirq_trgg, msecs_to_jiffies(rx_thread_wait_to))){
+                 AICWFDBG(LOGRXPOLL, "%s wait for completion timout \r\n", __func__);
+             }
+@@ -2565,6 +2573,7 @@ int sdio_bustx_thread(void *data)
+ {
+ 	struct aicwf_bus *bus = (struct aicwf_bus *) data;
+ 	struct aic_sdio_dev *sdiodev = bus->bus_priv.sdio;
++	int wait_ret;
+ #if 0    
+ #ifdef CONFIG_THREAD_INFO_IN_TASK
+     int set_cpu_ret = 0;
+@@ -2601,16 +2610,20 @@ int sdio_bustx_thread(void *data)
+     AICWFDBG(LOGINFO, "%s the current pid is:%d\n", __func__, current->pid);
+ 
+ 	while (1) {
+-        #if 0
+ 		if (kthread_should_stop()) {
+ 			AICWFDBG(LOGERROR, "sdio bustx thread stop\n");
+ 			break;
+ 		}
+-        #endif
+-	    if (!wait_for_completion_interruptible(&bus->bustx_trgg)) {
++		wait_ret = wait_for_completion_interruptible(&bus->bustx_trgg);
++		if (wait_ret) {
++			if (!kthread_should_stop())
++				usleep_range(1000, 2000);
++			continue;
++		}
++	    {
+ 			if (sdiodev->bus_if->state == BUS_DOWN_ST)
+ 				break;
+-				//continue;
++					//continue;
+ 
+ 			while (atomic_read(&sdiodev->is_bus_suspend) == 1) {
+ 				AICWFDBG(LOGINFO, "%s waiting for sdio bus resume\n", __func__);
+@@ -2696,6 +2709,8 @@ int sdio_busrx_thread(void *data)
+ {
+     struct aicwf_rx_priv *rx_priv = (struct aicwf_rx_priv *)data;
+     struct aicwf_bus *bus_if = rx_priv->sdiodev->bus_if;
++    int ret;
++    int wait_ret;
+     
+     
+ #if 0
+@@ -2733,28 +2748,31 @@ int sdio_busrx_thread(void *data)
+     AICWFDBG(LOGINFO, "%s the current pid is:%d\n", __func__, current->pid);
+     
+     while (1) {
+-        #if 0
+         if (kthread_should_stop()) {
+             AICWFDBG(LOGERROR, "sdio busrx thread stop\n");
+             break;
+         }
+-        #endif
+-
+ 		while (atomic_read(&rx_priv->sdiodev->is_bus_suspend) == 1) {
+ 			AICWFDBG(LOGINFO, "%s waiting for sdio bus resume\n", __func__);
+ 			msleep(10);
+ 			continue;
+ 		}
+ 
+-        if (!wait_for_completion_interruptible(&bus_if->busrx_trgg)) {
+-
+-            if (bus_if->state == BUS_DOWN_ST)
+-				break;
+-				//continue;
+-            rwnx_wakeup_lock(rx_priv->sdiodev->rwnx_hw->ws_rx);
+-            aicwf_process_rxframes(rx_priv);
+-            rwnx_wakeup_unlock(rx_priv->sdiodev->rwnx_hw->ws_rx);
++        wait_ret = wait_for_completion_interruptible(&bus_if->busrx_trgg);
++        if (wait_ret) {
++            if (kthread_should_stop())
++                break;
++            usleep_range(1000, 2000);
++            continue;
+         }
++        if (bus_if->state == BUS_DOWN_ST)
++			break;
++		rwnx_wakeup_lock(rx_priv->sdiodev->rwnx_hw->ws_rx);
++		aicwf_process_rxframes(rx_priv);
++		rwnx_wakeup_unlock(rx_priv->sdiodev->rwnx_hw->ws_rx);
++		ret = aicwf_sdio_writeb(rx_priv->sdiodev, rx_priv->sdiodev->sdio_reg.intr_config_reg, 0x07);
++		if (ret)
++			sdio_err("intr unmask failed:%d\n", ret);
+     }
+     aic_thread_wait_stop();
+ 	AICWFDBG(LOGINFO, "%s Exit\r\n", __func__);
+@@ -2849,11 +2863,65 @@ static void aicwf_sdio_enq_rxpkt(struct aic_sdio_dev *sdiodev, struct sk_buff *p
+ 
+ 
+ #define SDIO_OTHER_INTERRUPT (0x1ul << 7)
++#define AICWF_IRQ_DRAIN_MAX_LOOPS 32
++
++static int aicwf_sdio_irq_state_fence(struct aic_sdio_dev *sdiodev, const char *tag)
++{
++	int ret = 0;
++	int i;
++	u8 intstatus = 0;
++
++	if (!sdiodev)
++		return -EINVAL;
++
++	if (sdiodev->chipid == PRODUCT_ID_AIC8800D80 ||
++	    sdiodev->chipid == PRODUCT_ID_AIC8800D80X2) {
++		for (i = 0; i < AICWF_IRQ_DRAIN_MAX_LOOPS; i++) {
++			u8 int_pending = 0;
++
++			ret = aicwf_sdio_readb(sdiodev, sdiodev->sdio_reg.misc_int_status_reg, &intstatus);
++			if (ret) {
++				sdio_err("%s: %s misc status read fail:%d\n", __func__, tag, ret);
++				return ret;
++			}
++			if (!(intstatus & SDIO_OTHER_INTERRUPT))
++				break;
++
++			ret = aicwf_sdio_readb(sdiodev, sdiodev->sdio_reg.sleep_reg, &int_pending);
++			if (ret) {
++				sdio_err("%s: %s pending read fail:%d\n", __func__, tag, ret);
++				return ret;
++			}
++			int_pending &= ~0x01; /* dev->host soft irq */
++			ret = aicwf_sdio_writeb(sdiodev, sdiodev->sdio_reg.sleep_reg, int_pending);
++			if (ret) {
++				sdio_err("%s: %s pending clear fail:%d\n", __func__, tag, ret);
++				return ret;
++			}
++		}
++		if (i == AICWF_IRQ_DRAIN_MAX_LOOPS)
++			sdio_err("%s: %s irq drain overflow, last=0x%02x\n", __func__, tag, intstatus);
++	} else {
++		for (i = 0; i < AICWF_IRQ_DRAIN_MAX_LOOPS; i++) {
++			ret = aicwf_sdio_readb(sdiodev, sdiodev->sdio_reg.block_cnt_reg, &intstatus);
++			if (ret) {
++				sdio_err("%s: %s block_cnt read fail:%d\n", __func__, tag, ret);
++				return ret;
++			}
++			if (!(intstatus & SDIO_OTHER_INTERRUPT))
++				break;
++		}
++		if (i == AICWF_IRQ_DRAIN_MAX_LOOPS)
++			sdio_err("%s: %s irq drain overflow, last=0x%02x\n", __func__, tag, intstatus);
++	}
++
++	return 0;
++}
+ 
+ void aicwf_sdio_hal_irqhandler(struct sdio_func *func)
+ {
+ 	struct aicwf_bus *bus_if = dev_get_drvdata(&func->dev);
+-	struct aic_sdio_dev *sdiodev = bus_if->bus_priv.sdio;
++	struct aic_sdio_dev *sdiodev;
+ 	u8 intstatus = 0;
+ 	u8 byte_len = 0;
+ 	#ifdef CONFIG_PREALLOC_RX_SKB
+@@ -2863,8 +2931,12 @@ void aicwf_sdio_hal_irqhandler(struct sdio_func *func)
+ 	#endif
+ 	int ret;
+ 
+-
+-    if ((sdiodev->rwnx_hw) == NULL) {
++	if (!bus_if) {
++		sdio_err("bus_if is null\n");
++		return;
++	}
++	sdiodev = bus_if->bus_priv.sdio;
++	if (!sdiodev || !sdiodev->rwnx_hw) {
+ 		sdio_err("waiting for rwnx_hw->irq_enable is true\r\n");
+ 		return;
+ 	}
+@@ -2873,30 +2945,28 @@ void aicwf_sdio_hal_irqhandler(struct sdio_func *func)
+     rwnx_wakeup_lock(sdiodev->rwnx_hw->ws_irqrx);
+ 
+ 
+-	if (!bus_if || bus_if->state == BUS_DOWN_ST) {
++	if (bus_if->state == BUS_DOWN_ST) {
+ 		sdio_err("bus err\n");
+-        rwnx_wakeup_unlock(sdiodev->rwnx_hw->ws_irqrx);
+-		return;
++		goto out_unlock;
+ 	}
+ 
+-#ifdef CONFIG_PREALLOC_RX_SKB
++	#ifdef CONFIG_PREALLOC_RX_SKB
+ 	if (list_empty(&aic_rx_buff_list.rxbuff_list)) {
+ 		printk("%s %d, rxbuff list is empty\n", __func__, __LINE__);
+-		rwnx_wakeup_unlock(sdiodev->rwnx_hw->ws_irqrx);
+-		return;
++		goto out_unlock;
+ 	}
+-#endif
++	#endif
+ 
+     if (sdiodev->chipid == PRODUCT_ID_AIC8801 || sdiodev->chipid == PRODUCT_ID_AIC8800DC ||
+         sdiodev->chipid == PRODUCT_ID_AIC8800DW) {
+     	ret = aicwf_sdio_readb(sdiodev, sdiodev->sdio_reg.block_cnt_reg, &intstatus);
+-    	while (ret || (intstatus & SDIO_OTHER_INTERRUPT)) {
+-    		sdio_err("ret=%d, intstatus=%x\r\n", ret, intstatus);
+-		ret = aicwf_sdio_readb(sdiodev, sdiodev->sdio_reg.block_cnt_reg, &intstatus);
+-		if (!ret) {
+-			return;
+-		}
+-    	}
++	    	while (ret || (intstatus & SDIO_OTHER_INTERRUPT)) {
++	    		sdio_err("ret=%d, intstatus=%x\r\n", ret, intstatus);
++			ret = aicwf_sdio_readb(sdiodev, sdiodev->sdio_reg.block_cnt_reg, &intstatus);
++			if (!ret) {
++				goto out_unlock;
++			}
++	    	}
+     	sdiodev->rx_priv->data_len = intstatus * SDIOWIFI_FUNC_BLOCKSIZE;
+ 
+     	if (intstatus > 0) {
+@@ -2920,18 +2991,21 @@ void aicwf_sdio_hal_irqhandler(struct sdio_func *func)
++            ret = aicwf_sdio_writeb(sdiodev, sdiodev->sdio_reg.intr_config_reg, 0x00);
++            if (ret)
++                sdio_err("intr mask failed:%d\n", ret);
+             complete(&bus_if->busrx_trgg);
+         }
+ 
+-    }else if (sdiodev->chipid == PRODUCT_ID_AIC8800D80||
+-    sdiodev->chipid == PRODUCT_ID_AIC8800D80N||
+-    sdiodev->chipid == PRODUCT_ID_AIC8800D80WN||
+-    sdiodev->chipid == PRODUCT_ID_AIC8800D80X2) {
+-        do {
+-            ret = aicwf_sdio_readb(sdiodev, sdiodev->sdio_reg.misc_int_status_reg, &intstatus);
+-            if (!ret) {
+-                break;
+-            }
+-            sdio_err("ret=%d, intstatus=%x\r\n",ret, intstatus);
+-            return;
+-        } while (1);
++    }else if (sdiodev->chipid == PRODUCT_ID_AIC8800D80 ||
++             sdiodev->chipid == PRODUCT_ID_AIC8800D80N ||
++             sdiodev->chipid == PRODUCT_ID_AIC8800D80WN ||
++             sdiodev->chipid == PRODUCT_ID_AIC8800D80X2) {
++	        do {
++	            ret = aicwf_sdio_readb(sdiodev, sdiodev->sdio_reg.misc_int_status_reg, &intstatus);
++	            if (!ret) {
++	                break;
++	            }
++	            sdio_err("ret=%d, intstatus=%x\r\n",ret, intstatus);
++	            goto out_unlock;
++	        } while (1);
+         if (intstatus & SDIO_OTHER_INTERRUPT) {
+             u8 int_pending;
+             ret = aicwf_sdio_readb(sdiodev, sdiodev->sdio_reg.sleep_reg, &int_pending);
+@@ -2984,9 +3056,13 @@ void aicwf_sdio_hal_irqhandler(struct sdio_func *func)
+         if(atomic_read(&sdiodev->rx_priv->rx_cnt) == 1){
++            ret = aicwf_sdio_writeb(sdiodev, sdiodev->sdio_reg.intr_config_reg, 0x00);
++            if (ret)
++                sdio_err("intr mask failed:%d\n", ret);
+             complete(&bus_if->busrx_trgg);
+         }
+     }
+ 
+-    rwnx_wakeup_unlock(sdiodev->rwnx_hw->ws_irqrx);
++out_unlock:
++	rwnx_wakeup_unlock(sdiodev->rwnx_hw->ws_irqrx);
+ }
+ 
+ #if defined(CONFIG_SDIO_PWRCTRL)
+@@ -3021,29 +3092,25 @@ static struct aicwf_bus_ops aicwf_sdio_bus_ops = {
+ void aicwf_sdio_release(struct aic_sdio_dev *sdiodev)
+ {
+ 	struct aicwf_bus *bus_if;
+-    	int ret = 0;
++	int ret = 0;
+ 	AICWFDBG(LOGINFO, "%s Enter\n", __func__);
+ 
+ 	bus_if = dev_get_drvdata(sdiodev->dev);
+ 	bus_if->state = BUS_DOWN_ST;
++	ret = aicwf_sdio_writeb(sdiodev, sdiodev->sdio_reg.intr_config_reg, 0x0);
++	if (ret < 0)
++		sdio_err("reg:%d write failed!\n", sdiodev->sdio_reg.intr_config_reg);
++	ret = aicwf_sdio_irq_state_fence(sdiodev, "release");
++	if (ret)
++		sdio_err("irq release-fence failed:%d\n", ret);
+ #ifdef CONFIG_OOB
+ 	if(sdiodev->oob_enable){
+ 		sdio_claim_host(sdiodev->func);
+-		//disable sdio interrupt
+-		ret = aicwf_sdio_writeb(sdiodev, sdiodev->sdio_reg.intr_config_reg, 0x0);
+-		if (ret < 0) {
+-			AICWFDBG(LOGERROR, "reg:%d write failed!\n", sdiodev->sdio_reg.intr_config_reg);
+-		}
+ 		sdio_release_irq(sdiodev->func);
+ 		sdio_release_host(sdiodev->func);
+ 	}
+ #else
+ 	sdio_claim_host(sdiodev->func);
+-	//disable sdio interrupt
+-	ret = aicwf_sdio_writeb(sdiodev, sdiodev->sdio_reg.intr_config_reg, 0x0);
+-	if (ret < 0) {
+-		sdio_err("reg:%d write failed!\n", sdiodev->sdio_reg.intr_config_reg);
+-	}
+ 	sdio_release_irq(sdiodev->func);
+ 	sdio_release_host(sdiodev->func);
+ #endif
+@@ -3538,4 +3605,3 @@ void rwnx_deinit_wifi_suspend_node(void){
+ 	remove_proc_entry("wifi_suspend", 0);
+ }
+ #endif//CONFIG_WIFI_SUSPEND_FOR_LINUX
+-
+diff --git a/aic8800_fdrv/rwnx_cmds.c b/aic8800_fdrv/rwnx_cmds.c
+index 36e2cb4..aceb25f 100644
+--- a/aic8800_fdrv/rwnx_cmds.c
++++ b/aic8800_fdrv/rwnx_cmds.c
+@@ -12,6 +12,7 @@
+  */
+ 
+ #include <linux/list.h>
++#include <linux/delay.h>
+ 
+ #include "rwnx_cmds.h"
+ #include "rwnx_defs.h"
+@@ -28,6 +29,9 @@
+  *
+  */
+ extern int aicwf_sdio_writeb(struct aic_sdio_dev *sdiodev, uint regaddr, u8 val);
++static u16 aic_last_rx_msgid;
++static u16 aic_last_rx_plen;
++static unsigned long aic_last_rx_jiffies;
+ 
+ void rwnx_cmd_free(struct rwnx_cmd *cmd);
+ 
+@@ -38,6 +42,15 @@ static void cmd_dump(const struct rwnx_cmd *cmd)
+ 		   cmd->reqid, cmd->reqid != (lmac_msg_id_t)-1 ? RWNX_ID2STR(cmd->reqid) : "none");
+ }
+ 
++static void cmd_trace_tx(const char *phase, const struct rwnx_cmd *cmd, u32 qsz)
++{
++	printk(KERN_INFO "aic_cmd_tx phase=%s tkn=%u flags=%04x qsz=%u id=%u-%s reqcfm=%u-%s j=%lu\n",
++	       phase, cmd->tkn, cmd->flags, qsz,
++	       cmd->id, RWNX_ID2STR(cmd->id),
++	       cmd->reqid, (cmd->reqid != (lmac_msg_id_t)-1) ? RWNX_ID2STR(cmd->reqid) : "none",
++	       jiffies);
++}
++
+ /**
+  *
+  */
+@@ -46,8 +59,11 @@ static void cmd_complete(struct rwnx_cmd_mgr *cmd_mgr, struct rwnx_cmd *cmd)
+ 	//RWNX_DBG(RWNX_FN_ENTRY_STR);
+ 	lockdep_assert_held(&cmd_mgr->lock);
+ 
+-	//list_del(&cmd->list);
+-	//cmd_mgr->queue_sz--;
++	if (!list_empty(&cmd->list)) {
++		list_del_init(&cmd->list);
++		if (cmd_mgr->queue_sz > 0)
++			cmd_mgr->queue_sz--;
++	}
+ 
+ 	cmd->flags |= RWNX_CMD_FLAG_DONE;
+ 	if (cmd->flags & RWNX_CMD_FLAG_NONBLOCK) {
+@@ -134,6 +150,8 @@ static int cmd_mgr_queue(struct rwnx_cmd_mgr *cmd_mgr, struct rwnx_cmd *cmd)
+ #endif
+ 	bool defer_push = false;
+ 	u8_l empty = 0;
++	bool locked = false;
++	u32 qsz_snapshot = 0;
+ 
+ 	//RWNX_DBG(RWNX_FN_ENTRY_STR);
+ #ifdef CREATE_TRACE_POINTS
+@@ -142,6 +160,7 @@ static int cmd_mgr_queue(struct rwnx_cmd_mgr *cmd_mgr, struct rwnx_cmd *cmd)
+ 	if(cmd->e2a_msg != NULL) {
+ 		do {
+ 			spin_lock_bh(&cmd_mgr->lock);
++			locked = true;
+ 			if(cmd_mgr->state == RWNX_CMD_MGR_STATE_CRASHED) {
+ 				AICWFDBG(LOGERROR, "cmd queue crashed\n");
+ 				cmd->result = -EPIPE;
+@@ -151,6 +170,7 @@ static int cmd_mgr_queue(struct rwnx_cmd_mgr *cmd_mgr, struct rwnx_cmd *cmd)
+ 			empty = list_empty(&cmd_mgr->cmds);
+ 			if(!empty) {
+ 				spin_unlock_bh(&cmd_mgr->lock);
++				locked = false;
+ 				if(in_softirq()) {
+ 					printk("in_softirq:check cmdqueue empty\n");
+ 					mdelay(10);
+@@ -162,12 +182,15 @@ static int cmd_mgr_queue(struct rwnx_cmd_mgr *cmd_mgr, struct rwnx_cmd *cmd)
+ 		} while(!empty);//wait for cmd queue empty
+ 	} else {
+ 		spin_lock_bh(&cmd_mgr->lock);
+-		if (cmd_mgr->state == RWNX_CMD_MGR_STATE_CRASHED) {
+-			printk(KERN_CRIT"cmd queue crashed\n");
+-			cmd->result = -EPIPE;
++		locked = true;
++	}
++
++	if (cmd_mgr->state == RWNX_CMD_MGR_STATE_CRASHED) {
++		printk(KERN_CRIT"cmd queue crashed\n");
++		cmd->result = -EPIPE;
++		if (locked)
+ 			spin_unlock_bh(&cmd_mgr->lock);
+-			return -EPIPE;
+-		}
++		return -EPIPE;
+ 	}
+ 
+ 	#ifndef CONFIG_RWNX_FHOST
+@@ -224,7 +247,9 @@ static int cmd_mgr_queue(struct rwnx_cmd_mgr *cmd_mgr, struct rwnx_cmd *cmd)
+ 
+ 	//spin_unlock_bh(&cmd_mgr->lock);
+ 	if (!defer_push) {
++		qsz_snapshot = cmd_mgr->queue_sz;
+ 		spin_unlock_bh(&cmd_mgr->lock);
++		cmd_trace_tx("queue-direct", cmd, qsz_snapshot);
+ 		//printk("queue:id=%x, param_len=%u\n",cmd->a2e_msg->id, cmd->a2e_msg->param_len);
+ 		#ifdef AICWF_SDIO_SUPPORT
+ 		aicwf_set_cmd_tx((void *)(sdiodev), cmd->a2e_msg, sizeof(struct lmac_msg) + cmd->a2e_msg->param_len);
+@@ -255,11 +280,14 @@ static int cmd_mgr_queue(struct rwnx_cmd_mgr *cmd_mgr, struct rwnx_cmd *cmd)
+ 		}
+ 		#else
+ 		unsigned long tout = msecs_to_jiffies(RWNX_80211_CMD_TIMEOUT_MS * cmd_mgr->queue_sz);
+-		if (!wait_for_completion_timeout(&cmd->complete, tout)) {
+-			printk(KERN_CRIT"cmd timed-out\n");
+-			#ifdef AICWF_SDIO_SUPPORT
+-			ret = aicwf_sdio_writeb(sdiodev, sdiodev->sdio_reg.wakeup_reg, 2);
+-			if (ret < 0) {
++			if (!wait_for_completion_timeout(&cmd->complete, tout)) {
++				printk(KERN_CRIT"cmd timed-out\n");
++				printk(KERN_CRIT "aic_timeout last_rx msgid=%u-%s plen=%u age_j=%lu\n",
++				       aic_last_rx_msgid, RWNX_ID2STR(aic_last_rx_msgid),
++				       aic_last_rx_plen, jiffies - aic_last_rx_jiffies);
++				#ifdef AICWF_SDIO_SUPPORT
++				ret = aicwf_sdio_writeb(sdiodev, sdiodev->sdio_reg.wakeup_reg, 2);
++				if (ret < 0) {
+ 				sdio_err("reg:%d write failed!\n", sdiodev->sdio_reg.wakeup_reg);
+ 			}
+ 		#endif
+@@ -274,15 +302,11 @@ static int cmd_mgr_queue(struct rwnx_cmd_mgr *cmd_mgr, struct rwnx_cmd *cmd)
+ 				cmd_complete(cmd_mgr, cmd);
+ 			}
+ 			spin_unlock_bh(&cmd_mgr->lock);
+-		} else {
+-			spin_lock_bh(&cmd_mgr->lock);
+-			list_del(&cmd->list);
+-			cmd_mgr->queue_sz--;
+-			spin_unlock_bh(&cmd_mgr->lock);
+-			rwnx_cmd_free(cmd);//kfree(cmd);
+-			if (!list_empty(&cmd_mgr->cmds))
+-				WAKE_CMD_WORK(cmd_mgr);
+-		}
++			} else {
++				rwnx_cmd_free(cmd);//kfree(cmd);
++				if (!list_empty(&cmd_mgr->cmds))
++					WAKE_CMD_WORK(cmd_mgr);
++			}
+ 		#endif
+ 	} else {
+ 		cmd->result = 0;
+@@ -368,6 +392,7 @@ void cmd_mgr_task_process(struct work_struct *work)
+ 			struct aic_usb_dev *usbdev = container_of(cmd_mgr, struct aic_usb_dev, cmd_mgr);
+ #endif
+ 			next->flags &= ~RWNX_CMD_FLAG_WAIT_PUSH;
++			cmd_trace_tx("queue-worker", next, cmd_mgr->queue_sz);
+ 
+ 			//printk("cmd_process, cmd->id=%d, tkn=%d\r\n",next->reqid, next->tkn);
+ 			//rwnx_ipc_msg_push(rwnx_hw, next, RWNX_CMD_A2EMSG_LEN(next->a2e_msg));
+@@ -379,11 +404,14 @@ void cmd_mgr_task_process(struct work_struct *work)
+ 			kfree(next->a2e_msg);
+ 
+ 			tout = msecs_to_jiffies(RWNX_80211_CMD_TIMEOUT_MS * cmd_mgr->queue_sz);
+-			if (!wait_for_completion_timeout(&next->complete, tout)) {
+-				printk(KERN_CRIT"cmd timed-out\n");
++				if (!wait_for_completion_timeout(&next->complete, tout)) {
++					printk(KERN_CRIT"cmd timed-out\n");
++					printk(KERN_CRIT "aic_timeout last_rx msgid=%u-%s plen=%u age_j=%lu\n",
++					       aic_last_rx_msgid, RWNX_ID2STR(aic_last_rx_msgid),
++					       aic_last_rx_plen, jiffies - aic_last_rx_jiffies);
+ #ifdef AICWF_SDIO_SUPPORT
+-				if (aicwf_sdio_writeb(sdiodev, sdiodev->sdio_reg.wakeup_reg, 2) < 0) {
+-					sdio_err("reg:%d write failed!\n", sdiodev->sdio_reg.wakeup_reg);
++					if (aicwf_sdio_writeb(sdiodev, sdiodev->sdio_reg.wakeup_reg, 2) < 0) {
++						sdio_err("reg:%d write failed!\n", sdiodev->sdio_reg.wakeup_reg);
+ 				}
+ #endif
+ 				aic8800_start_system_reset_flow(sdiodev);
+@@ -396,14 +424,10 @@ void cmd_mgr_task_process(struct work_struct *work)
+ 					cmd_complete(cmd_mgr, next);
+ 				}
+ 				spin_unlock_bh(&cmd_mgr->lock);
+-			} else {
+-				spin_lock_bh(&cmd_mgr->lock);
+-				list_del(&next->list);
+-				cmd_mgr->queue_sz--;
+-				spin_unlock_bh(&cmd_mgr->lock);
+-				rwnx_cmd_free(next);//kfree(next);
++				} else {
++					rwnx_cmd_free(next);//kfree(next);
++				}
+ 			}
+-		}
+ 	}
+ 
+ }
+@@ -447,15 +471,23 @@ static int cmd_mgr_msgind(struct rwnx_cmd_mgr *cmd_mgr, struct rwnx_cmd_e2amsg *
+ #ifdef CREATE_TRACE_POINTS
+ 	trace_msg_recv(msg->id);
+ #endif
++	aic_last_rx_msgid = msg->id;
++	aic_last_rx_plen = msg->param_len;
++	aic_last_rx_jiffies = jiffies;
++	printk(KERN_INFO "aic_cmd_rx msgid=%u-%s plen=%u qsz=%u j=%lu\n",
++	       msg->id, RWNX_ID2STR(msg->id), msg->param_len, cmd_mgr->queue_sz, jiffies);
+ 	//printk("cmd->id=%x\n", msg->id);
+ 	spin_lock_bh(&cmd_mgr->lock);
+ 	list_for_each_entry_safe(cmd, pos, &cmd_mgr->cmds, list) {
+ 		if (cmd->reqid == msg->id &&
+ 			(cmd->flags & RWNX_CMD_FLAG_WAIT_CFM)) {
+ 
+-			if (!cmd_mgr_run_callback(rwnx_hw, cmd, msg, cb)) {
+-				found = true;
+-				cmd->flags &= ~RWNX_CMD_FLAG_WAIT_CFM;
++				if (!cmd_mgr_run_callback(rwnx_hw, cmd, msg, cb)) {
++					found = true;
++					printk(KERN_INFO "aic_cmd_cfm match tkn=%u req=%u-%s cmdid=%u-%s flags=%04x j=%lu\n",
++					       cmd->tkn, cmd->reqid, RWNX_ID2STR(cmd->reqid),
++					       cmd->id, RWNX_ID2STR(cmd->id), cmd->flags, jiffies);
++					cmd->flags &= ~RWNX_CMD_FLAG_WAIT_CFM;
+ 
+ 				if (WARN((msg->param_len > RWNX_CMD_E2AMSG_LEN_MAX),
+ 						 "Unexpect E2A msg len %d > %d\n", msg->param_len,
+@@ -475,8 +507,11 @@ static int cmd_mgr_msgind(struct rwnx_cmd_mgr *cmd_mgr, struct rwnx_cmd_e2amsg *
+ 	}
+ 	spin_unlock_bh(&cmd_mgr->lock);
+ 
+-	if (!found)
++	if (!found) {
++		printk(KERN_WARNING "aic_cmd_rx unmatched msgid=%u-%s qsz=%u j=%lu\n",
++		       msg->id, RWNX_ID2STR(msg->id), cmd_mgr->queue_sz, jiffies);
+ 		cmd_mgr_run_callback(rwnx_hw, NULL, msg, cb);
++	}
+ 
+ 	return 0;
+ }
+@@ -506,7 +541,7 @@ static void cmd_mgr_drain(struct rwnx_cmd_mgr *cmd_mgr)
+ 
+ 	spin_lock_bh(&cmd_mgr->lock);
+ 	list_for_each_entry_safe(cur, nxt, &cmd_mgr->cmds, list) {
+-		list_del(&cur->list);
++		list_del_init(&cur->list);
+ 		cmd_mgr->queue_sz--;
+ 		if (!(cur->flags & RWNX_CMD_FLAG_NONBLOCK))
+ 			complete(&cur->complete);
+@@ -593,4 +628,3 @@ void aicwf_set_cmd_tx(void *dev, struct lmac_msg *msg, uint len)
+ 
+ 	aicwf_bus_txmsg(bus, buffer, len + 8);
+ }
+-
+diff --git a/aic8800_fdrv/rwnx_msg_tx.c b/aic8800_fdrv/rwnx_msg_tx.c
+index 7435c74..678fddf 100644
+--- a/aic8800_fdrv/rwnx_msg_tx.c
++++ b/aic8800_fdrv/rwnx_msg_tx.c
+@@ -14,7 +14,6 @@
+ #include "rwnx_mod_params.h"
+ #include "reg_access.h"
+ #ifdef CONFIG_RWNX_BFMER
+-#include "rwnx_bfmer.h"
+ #endif //(CONFIG_RWNX_BFMER)
+ #include "rwnx_compat.h"
+ #include "rwnx_cmds.h"
+@@ -172,6 +171,14 @@ struct rwnx_cmd *rwnx_cmd_malloc(void){
+ 			AICWFDBG(LOGTRACE, "%s get cmd_array[%d]:%p \r\n", __func__, cmd_array_index,&cmd_array[cmd_array_index]);
+ 			cmd = &cmd_array[cmd_array_index];
+ 			cmd_array[cmd_array_index].used = 1;
++			INIT_LIST_HEAD(&cmd->list);
++			cmd->id = 0;
++			cmd->reqid = 0;
++			cmd->a2e_msg = NULL;
++			cmd->e2a_msg = NULL;
++			cmd->tkn = 0;
++			cmd->flags = 0;
++			cmd->result = -EINTR;
+ 			break;
+ 		}
+ 	}
+@@ -356,11 +363,17 @@ static int rwnx_send_msg(struct rwnx_hw *rwnx_hw, const void *msg_params,
+ 	//nonblock = is_non_blocking_msg(msg->id);
+ 	nonblock = 0;
+ 	cmd = rwnx_cmd_malloc();//kzalloc(sizeof(struct rwnx_cmd), nonblock ? GFP_ATOMIC : GFP_KERNEL);
++	if (!cmd) {
++		rwnx_msg_free(rwnx_hw, msg_params);
++		rwnx_wakeup_unlock(rwnx_hw->ws_tx);
++		return -ENOMEM;
++	}
+ 	cmd->result  = -EINTR;
+ 	cmd->id      = msg->id;
+ 	cmd->reqid   = reqid;
+ 	cmd->a2e_msg = msg;
+ 	cmd->e2a_msg = cfm;
++	cmd->flags   = 0;
+ 	if (nonblock)
+ 		cmd->flags = RWNX_CMD_FLAG_NONBLOCK;
+ 	if (reqcfm)
+@@ -390,13 +403,13 @@ static int rwnx_send_msg(struct rwnx_hw *rwnx_hw, const void *msg_params,
+ 	if (reqcfm) {
+ 		cmd->flags &= ~RWNX_CMD_FLAG_WAIT_ACK; // we don't need ack any more
+ 		ret = rwnx_hw->cmd_mgr->queue(rwnx_hw->cmd_mgr, cmd);
+-	} else {
++		} else {
+ #ifdef AICWF_SDIO_SUPPORT
+-		aicwf_set_cmd_tx((void *)(rwnx_hw->sdiodev), cmd->a2e_msg, sizeof(struct lmac_msg) + cmd->a2e_msg->param_len);
++			aicwf_set_cmd_tx((void *)(rwnx_hw->sdiodev), cmd->a2e_msg, sizeof(struct lmac_msg) + cmd->a2e_msg->param_len);
+ #else
+-		aicwf_set_cmd_tx((void *)(rwnx_hw->usbdev), cmd->a2e_msg, sizeof(struct lmac_msg) + cmd->a2e_msg->param_len);
++			aicwf_set_cmd_tx((void *)(rwnx_hw->usbdev), cmd->a2e_msg, sizeof(struct lmac_msg) + cmd->a2e_msg->param_len);
+ #endif
+-	}
++		}
+ 
+ 	if (!reqcfm || ret)
+ 		rwnx_cmd_free(cmd);//kfree(cmd);
+@@ -424,11 +437,17 @@ static int rwnx_send_msg1(struct rwnx_hw *rwnx_hw, const void *msg_params,
+ 	//nonblock = is_non_blocking_msg(msg->id);
+ 	nonblock = 0;
+ 	cmd = rwnx_cmd_malloc();//kzalloc(sizeof(struct rwnx_cmd), nonblock ? GFP_ATOMIC : GFP_KERNEL);
++	if (!cmd) {
++		rwnx_msg_free(rwnx_hw, msg_params);
++		rwnx_wakeup_unlock(rwnx_hw->ws_tx);
++		return -ENOMEM;
++	}
+ 	cmd->result  = -EINTR;
+ 	cmd->id      = msg->id;
+ 	cmd->reqid   = reqid;
+ 	cmd->a2e_msg = msg;
+ 	cmd->e2a_msg = cfm;
++	cmd->flags   = 0;
+ 	if (nonblock)
+ 		cmd->flags = RWNX_CMD_FLAG_NONBLOCK;
+ 	if (reqcfm)

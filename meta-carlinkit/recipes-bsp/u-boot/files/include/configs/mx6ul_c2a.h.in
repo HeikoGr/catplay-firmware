@@ -1,0 +1,65 @@
+#ifndef __MX6UL_C2A_CONFIG_H
+#define __MX6UL_C2A_CONFIG_H
+
+#include <asm/arch/imx-regs.h>
+#include <linux/sizes.h>
+#include <linux/stringify.h>
+#include "mx6_common.h"
+#include <asm/mach-imx/gpio.h>
+#include "imx_env.h"
+
+#define BOOTARGS_CMA_SIZE   ""
+
+#define CFG_MXC_UART_BASE		UART1_BASE
+
+#define CONFIG_C2A_FITIMAGE_OFFSET "@KERNEL_OFFSET@" 
+#define CONFIG_C2A_FITIMAGE_SIZE "@KERNEL_SIZE@"
+#define CONFIG_C2A_AHB_BASE "0x60000000"
+#define CONFIG_C2A_BOOT_FITIMAGE "fitImage.c2a"
+#define CONFIG_C2A_FLASH_FITIMAGE "fitImage.c2a.flashme"
+#define CONFIG_C2A_FLASH_BIN "c2a.bin.flashme"
+
+/*
+	"limit_fit_size=" \
+		"setexpr c2a_fit_size ${c2a_ahb_base} + ${c2a_fit_offset};" \
+		"setexpr c2a_fit_size ${c2a_fit_size} + 4;" \
+		"setexpr c2a_fit_size *0x${c2a_fit_size};" \
+		"setenv c2a_fit_size 0x${c2a_fit_size}"
+*/
+#define CFG_EXTRA_ENV_SETTINGS \
+	"console=ttymxc0\0" \
+	"c2a_fit_offset=" CONFIG_C2A_FITIMAGE_OFFSET "\0" \
+	"c2a_fit_size=" CONFIG_C2A_FITIMAGE_SIZE "\0" \
+	"c2a_ahb_base=" CONFIG_C2A_AHB_BASE "\0" \
+	"bench=sf probe 0; echo start benchmark; sf read ${loadaddr} 0 0x1000000; echo end benchmark\0" \
+	"usb_start=usb start && usb tree && fatls usb 0:1\0" \
+	"usb_boot=run usb_start && " \
+		"load usb 0:1 ${loadaddr} /fitImage.c2a && " \
+		"echo Booting from USB fitImage && " \
+		"bootm ${loadaddr};\0" \
+	"usb_flash_bin=run usb_start && " \
+		"load usb 0:1 ${loadaddr} /c2a.bin.flashme && " \
+		"fatrename usb 0:1 /c2a.bin.flashme c2a.bin.flashme.xxx" \
+		"sf write ${loadaddr} 0x0 ${filesize}; reset\0" \
+	"usb_flash_fit=run usb_start && " \
+		"load usb 0:1 ${loadaddr} /fitImage.c2a.flashme && " \
+		"fatrename usb 0:1 /fitImage.c2a.flashme fitImage.c2a.flashme.xxx &&" \
+		"sf write ${loadaddr} ${c2a_fit_offset} ${filesize}; reset\0" \
+	"bootxip=echo Booting from SPI FLASH XIP;" \
+		"setexpr c2a_fit_ahb_addr ${c2a_ahb_base} + ${c2a_fit_offset}; " \
+		"sf probe 0; sf read ${loadaddr} 0x0 0x4; " \
+		"bootm ${c2a_fit_ahb_addr};\0" \
+	"bootspi=echo Booting from SPI FLASH;" \
+		"sf probe 0; printenv c2a_fit_offset; printenv c2a_fit_size; " \
+        "sf read ${loadaddr} ${c2a_fit_offset} ${c2a_fit_size}; " \
+        "bootm ${loadaddr};\0" \
+	"bootcmd=run usb_boot; run bootspi\0" /* "bootcmd=run bench; run bootspi;\0" */
+
+/* Physical Memory Map */
+#define PHYS_SDRAM			MMDC0_ARB_BASE_ADDR
+
+#define CFG_SYS_SDRAM_BASE		PHYS_SDRAM
+#define CFG_SYS_INIT_RAM_ADDR	IRAM_BASE_ADDR
+#define CFG_SYS_INIT_RAM_SIZE	IRAM_SIZE
+
+#endif

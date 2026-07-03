@@ -1,0 +1,47 @@
+diff --git a/Makefile b/Makefile
+index 6f02ee9..f6d0a39 100644
+--- a/Makefile
++++ b/Makefile
+@@ -10,8 +10,9 @@ MAKEFLAGS +=-j$(shell nproc)
+ 
+ ########## config option ##########
+ export CONFIG_USE_FW_REQUEST = n
+-export CONFIG_PREALLOC_RX_SKB = y
+-export CONFIG_PREALLOC_TXQ = y
++export CONFIG_USE_P2P0 = y
++export CONFIG_PREALLOC_RX_SKB = n
++export CONFIG_PREALLOC_TXQ = n
+ export CONFIG_OOB = n
+ export CONFIG_GPIO_WAKEUP = n
+ export CONFIG_RESV_MEM_SUPPORT = y
+diff --git a/aic8800_fdrv/Makefile b/aic8800_fdrv/Makefile
+index 033b8b4..d4fe06e 100644
+--- a/aic8800_fdrv/Makefile
++++ b/aic8800_fdrv/Makefile
+@@ -89,7 +89,7 @@ CONFIG_WIFI_SUSPEND_FOR_LINUX = n
+ # Need to set fw path in BOARD_KERNEL_CMDLINE
+ CONFIG_USE_FW_REQUEST ?= n
+ CONFIG_WOWLAN = n
+-CONFIG_USE_P2P0=n
++CONFIG_USE_P2P0=y
+ CONFIG_TX_NETIF_FLOWCTRL = n
+ CONFIG_ONE_TXQ = n
+ CONFIG_BR_SUPPORT =n
+@@ -103,7 +103,7 @@ CONFIG_PREALLOC_TXQ ?= y
+ CONFIG_DPD = y
+ CONFIG_FORCE_DPD_CALIB = y
+ CONFIG_LOFT_CALIB = n
+-CONFIG_FILTER_TCP_ACK =y
++CONFIG_FILTER_TCP_ACK = n
+ CONFIG_RESV_MEM_SUPPORT ?= y
+ CONFIG_GKI = n
+ CONFIG_TEMP_COMP = n
+@@ -130,7 +130,7 @@ CONFIG_AUTO_POWERSAVE = n
+ CONFIG_AICWF_LATENCY_MODE = n
+ 
+ #support D80X2 can write rf result to file
+-CONFIG_WRITE_FILE_D80X2 = n
++CONFIG_WRITE_FILE_D80X2 = y
+ 
+ ifneq ($(CONFIG_WIRELESS_EXT), y)
+ CONFIG_USE_WIRELESS_EXT = n
