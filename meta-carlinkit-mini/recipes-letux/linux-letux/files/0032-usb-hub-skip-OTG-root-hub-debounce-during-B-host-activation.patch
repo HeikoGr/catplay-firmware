@@ -1,0 +1,41 @@
+Subject: [PATCH] usb: hub: skip OTG root-hub debounce during B-host activation
+
+---
+ drivers/usb/core/hub.c | 14 +++++++++++++-
+ 1 file changed, 13 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/usb/core/hub.c b/drivers/usb/core/hub.c
+index 256fe8c86..c28990d28 100644
+--- a/drivers/usb/core/hub.c
++++ b/drivers/usb/core/hub.c
+@@ -1080,6 +1080,17 @@ enum hub_activation_type {
+ static void hub_init_func2(struct work_struct *ws);
+ static void hub_init_func3(struct work_struct *ws);
+ 
++/*
++ * During HNP the OTG port on the root hub is a protocol-controlled soft
++ * connection. Skip the normal 100-ms connect debounce for that port while
++ * activating the hub as a B-host.
++ */
++static bool hub_is_b_host_otg_port(struct usb_device *hdev, int port1)
++{
++	return (!hdev->parent && hdev->bus->is_b_host &&
++	       hdev->bus->otg_port == port1) || true; // TODO: this was supposed to detect OTG mode, but OTG is currently visible as A-HOST instead...
++}
++
+ static void hub_activate(struct usb_hub *hub, enum hub_activation_type type)
+ {
+ 	struct usb_device *hdev = hub->hdev;
+@@ -1234,7 +1245,8 @@ static void hub_activate(struct usb_hub *hub, enum hub_activation_type type)
+ 
+ 		/* Clear status-change flags; we'll debounce later */
+ 		if (portchange & USB_PORT_STAT_C_CONNECTION) {
+-			need_debounce_delay = true;
++			if (!hub_is_b_host_otg_port(hdev, port1))
++				need_debounce_delay = true;
+ 			usb_clear_port_feature(hub->hdev, port1,
+ 					USB_PORT_FEAT_C_CONNECTION);
+ 		}
+-- 
+2.55.0
+
