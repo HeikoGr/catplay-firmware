@@ -1,4 +1,4 @@
-LETUX_BRANCH = "ingenic-x1600-v4"
+LETUX_BRANCH = "old-ingenic-x1600-v4"
 SRCREV = "96d2b0b0ddcc50a690d942812e5fa79275a55813"
 PACKAGE_ARCH = "${MACHINE_ARCH}"
 PROVIDES = "virtual/bootloader"
