@@ -45,6 +45,7 @@ SRC_URI:append = " \
     file://0030-dwc2-drop-dwc2_hcd_start-50ms-delay.patch \
     file://0031-usb-core-set-USB_PORT_QUIRK_OLD_SCHEME-and-USB_PORT_QUIRK_FAST_ENUM-quirks-on-dwc2-root-hub.patch \
     file://0032-usb-hub-skip-OTG-root-hub-debounce-during-B-host-activation.patch \
+    file://0033-clk-ingenic-x1600-couple-cpu-and-l2-dividers.patch \
 "
 
 # PV is defined in the base in linux-imx.inc file and uses the LINUX_VERSION definition
