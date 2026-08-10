@@ -7,6 +7,7 @@ AIC_SRC = "git://github.com/radxa-pkg/aic8800;protocol=https"
 
 SRC_URI = " \
     ${AIC_SRC};branch=${SRCBRANCH} \
+    file://fix-linux-7.2-sdio-build.patch \
     file://regulators.patch \
     file://ax1800.patch \
     file://rwnx_send_bcn.patch \
@@ -20,7 +21,7 @@ SRC_URI = " \
 
 FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
 
-SRCREV = "bfb954c8b0e1adbd4ceb95bfe5f212904e25bdf7"
+SRCREV = "6e076049b719ac2ff7ce5c92786a680407b11cdb"
 
 COMPILE_DIR = "${WORKDIR}/git/src/SDIO/driver_fw/driver/aic8800"
 FIRMWARE_DIR = "${WORKDIR}/git/src/SDIO/driver_fw/fw/"
