@@ -10,6 +10,34 @@
 
 	model = "Carlinkit Mini Ultra (AX1800M)";
 
+	cpu_opp_table: opp-table {
+		compatible = "operating-points-v2";
+
+		opp-1104000000 {
+			opp-hz = /bits/ 64 <1104000000>;
+		};
+
+		opp-552000000 {
+			opp-hz = /bits/ 64 <552000000>;
+		};
+
+		opp-368000000 {
+			opp-hz = /bits/ 64 <368000000>;
+		};
+
+		opp-276000000 {
+			opp-hz = /bits/ 64 <276000000>;
+		};
+
+		opp-220800000 {
+			opp-hz = /bits/ 64 <220800000>;
+		};
+
+		opp-184000000 {
+			opp-hz = /bits/ 64 <184000000>;
+		};
+	};
+
 	/* As a gadget we are unlikely to detect VBUS, because it goes directly to voltage regulator and powers the entire device.
 	   Pretend it's always there */
 	vbus_otg: regulator-vbus {
@@ -260,6 +288,10 @@
 
 &uart3 {
 	status = "disabled";
+};
+
+&cpu0 {
+	operating-points-v2 = <&cpu_opp_table>;
 };
 
 &cpufreq {
