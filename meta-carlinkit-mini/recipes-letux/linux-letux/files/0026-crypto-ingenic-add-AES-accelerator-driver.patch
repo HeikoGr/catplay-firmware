@@ -519,7 +519,7 @@ index 000000000..18a2dfabd
 +
 +	mutex_lock(&aes->lock);
 +
-+#if 0
++#if 1
 +	err = clk_prepare_enable(aes->clk_aes);
 +	if (err) {
 +		dev_err(aes->dev, "failed to enable AES clock: %d\n", err);
@@ -591,7 +591,7 @@ index 000000000..18a2dfabd
 +
 +out_stop:
 +	ingenic_aes_stop(aes);
-+#if 0
++#if 1
 +	clk_disable_unprepare(aes->clk_pdma);
 +out_disable_aes:
 +	clk_disable_unprepare(aes->clk_aes);
@@ -948,7 +948,7 @@ index 000000000..18a2dfabd
 +
 +	mutex_lock(&aes->lock);
 +
-+#if 0
++#if 1
 +	err = clk_prepare_enable(aes->clk_aes);
 +	if (err) {
 +		dev_err(aes->dev, "failed to enable AES clock: %d\n", err);
@@ -1068,7 +1068,7 @@ index 000000000..18a2dfabd
 +
 +out_stop:
 +	ingenic_aes_stop(aes);
-+#if 0
++#if 1
 +	clk_disable_unprepare(aes->clk_pdma);
 +out_disable_aes:
 +	clk_disable_unprepare(aes->clk_aes);
@@ -1296,7 +1296,7 @@ index 000000000..18a2dfabd
 +	}
 +
 +	ingenic_aes_boot_pdma_mcu(aes);
-+#if 0
++#if 1
 +	clk_disable_unprepare(aes->clk_pdma);
 +	clk_disable_unprepare(aes->clk_aes);
 +#endif
