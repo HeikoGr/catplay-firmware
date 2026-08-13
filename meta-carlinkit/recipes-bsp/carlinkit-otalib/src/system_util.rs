@@ -50,6 +50,7 @@ impl SystemUtil {
 
         let shell = c"/bin/sh";
         let dash_c = c"-c";
+        let devnull = c"/dev/null";
 
         unsafe {
             let pid = libc::fork();
@@ -58,8 +59,39 @@ impl SystemUtil {
             }
 
             if pid == 0 {
-                let argv = [shell.as_ptr(), dash_c.as_ptr(), cmd_c.as_ptr(), core::ptr::null()];
-                libc::execve(shell.as_ptr() as *const _, argv.as_ptr() as *const _, core::ptr::null());
+                let fd = libc::open(devnull.as_ptr(), libc::O_RDWR);
+
+                if fd >= 0 {
+                    libc::dup2(fd, 0);
+                    libc::dup2(fd, 1);
+                    libc::dup2(fd, 2);
+
+                    if fd > 2 {
+                        libc::close(fd);
+                    }
+                }
+
+                let argv = [
+                    shell.as_ptr(),
+                    dash_c.as_ptr(),
+                    cmd_c.as_ptr(),
+                    core::ptr::null(),
+                ];
+
+                let path = c"PATH=/usr/sbin:/usr/bin:/sbin:/bin";
+                let home = c"HOME=/";
+                let envp = [
+                    path.as_ptr(),
+                    home.as_ptr(),
+                    core::ptr::null(),
+                ];
+
+                libc::execve(
+                    shell.as_ptr() as *const _,
+                    argv.as_ptr() as *const _,
+                    core::ptr::null(),
+                );
+
                 libc::_exit(127);
             }
 
@@ -71,6 +103,7 @@ impl SystemUtil {
             if libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0 {
                 Ok(())
             } else {
+                // dmesg!("cmd status: {status}");
                 Err("command failed")
             }
         }
