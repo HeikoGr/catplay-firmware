@@ -34,8 +34,8 @@ and there is a "lookalike" on the market which looks the same, but is not based 
 ## Requirements
 - you have the newer revision (AX1800M)
 - PC is connected to SSID that starts with VehiConn_*
-- Python 3 is installed
-- Python package dependencies: Run `pip install paramiko pyusb` before executing the exploit
+- Python 3 is installed (the `python3` command works)
+- Python package dependencies: Run `python3 -m pip install paramiko pyusb` before executing the exploit (if you keep `sudo python3` in exploit.sh, ensure `pyusb` is installed for root too)
 - Device IP configuration: Check the IP address used in `exploit.sh` — may vary depending on device batch or configuration (e.g. 192.168.50.100)
 
 Note: there are reports that Carlinkit changed their firmware vendor _again_ and newer devices may not use VehiConn firmware.  
