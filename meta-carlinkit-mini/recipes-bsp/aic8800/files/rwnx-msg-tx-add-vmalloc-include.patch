@@ -1,9 +1,9 @@
 diff --git a/aic8800_fdrv/rwnx_msg_tx.c b/aic8800_fdrv/rwnx_msg_tx.c
-index 678fddf..1f0ff59 100644
+index 096e02d..d966bc1 100644
 --- a/aic8800_fdrv/rwnx_msg_tx.c
 +++ b/aic8800_fdrv/rwnx_msg_tx.c
-@@ -13,6 +13,7 @@
- #include "rwnx_msg_tx.h"
+@@ -14,6 +14,7 @@
+ #include <linux/string.h>
  #include "rwnx_mod_params.h"
  #include "reg_access.h"
 +#include <linux/vmalloc.h>
