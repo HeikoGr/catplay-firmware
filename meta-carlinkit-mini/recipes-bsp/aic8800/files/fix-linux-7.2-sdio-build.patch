@@ -27,14 +27,6 @@
 -
 --- a/aic8800_fdrv/rwnx_main.c
 +++ b/aic8800_fdrv/rwnx_main.c
-@@ -1622,5 +1622,7 @@
- 	vif = netdev_priv(ndev);
- 	vif->key_has_add = 0;
-+#if LINUX_VERSION_CODE < KERNEL_VERSION(7, 2, 0)
- 	ndev->ieee80211_ptr = &vif->wdev;
-+#endif
- 	vif->wdev.wiphy = rwnx_hw->wiphy;
- 	vif->rwnx_hw = rwnx_hw;
 @@ -1728,5 +1730,9 @@
  	if (params) {
  		vif->use_4addr = params->use_4addr;

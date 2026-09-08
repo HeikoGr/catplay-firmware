@@ -68,5 +68,9 @@ SRC_URI += "\
 RUSTFLAGS:append:libc-musl = " -C link-arg=-static -C link-arg=-Wl,-Bstatic -C link-arg=-lc -C target-feature=+crt-static -C link-arg=-Wl,--gc-sections"
 RUSTFLAGS:append = " -C link-arg=-lc"
 
+# undefined symbol: __sync_synchronize
+RUSTFLAGS:append:armv5 = " -C link-arg=-lgcc"
+DEPENDS:append:armv5 = "gcc-runtime"
+
 #DEBUG_BUILD = "1"
 inherit c2a-rust-app

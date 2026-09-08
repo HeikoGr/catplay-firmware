@@ -29,6 +29,7 @@ tar \
     --exclude='./git' \
     --exclude='.git' \
     --exclude='./.git' \
+    --exclude='./target' \
     --exclude='./firmware' \
     -C "${repo_root}" \
     -cf - . | gzip -n > "${bundle_path}"

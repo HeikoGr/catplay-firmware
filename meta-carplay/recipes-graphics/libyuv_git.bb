@@ -15,3 +15,11 @@ EXTRA_OECMAKE = "-DTESTING=OFF"
 do_install:append() {
     rm -f ${D}${libdir}/libyuv.so
 }
+
+# This libyuv revision enables its NEON objects solely from
+# CMAKE_SYSTEM_PROCESSOR matching /^arm/; it does not consume a
+# LIBYUV_DISABLE_NEON CMake option. Use a neutral CMake processor name to keep
+# those objects out, and also guard the C/C++ headers explicitly.
+EXTRA_OECMAKE:append:armv5 = " -DCMAKE_SYSTEM_PROCESSOR=generic -DLIBYUV_DISABLE_NEON=ON"
+CFLAGS:append:armv5 = " -DLIBYUV_DISABLE_NEON"
+CXXFLAGS:append:armv5 = " -DLIBYUV_DISABLE_NEON"
