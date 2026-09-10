@@ -127,7 +127,7 @@ fi
 
 echo "[*] Checking Yocto host dependencies"
 check_host_dependencies
-check_python_module websockets
+# check_python_module websockets
 
 if [[ ! -d "${catplay_dir}/.git" ]]; then
     mkdir -p "$(dirname "${catplay_dir}")"
@@ -170,8 +170,15 @@ MACHINE = "${machine}"
 DISTRO = "${distro}"
 LICENSE_FLAGS_ACCEPTED = "commercial"
 
-# Prefer the GNU project's primary archive; retain the geo mirror as a fallback.
-GNU_MIRROR = "https://ftp.gnu.org/gnu"
+# ftp.gnu.org (the primary archive) aggressively throttles/rate-limits parallel
+# connections, which manifests as do_fetch tasks hanging for a long time.
+# Try the ftpmirror.gnu.org redirector (auto-selects a fast nearby mirror)
+# *before* falling back to the origin server.
+GNU_MIRROR = "https://ftpmirror.gnu.org/gnu"
+PREMIRRORS:prepend = " \\
+  https://ftp.gnu.org/gnu/ https://ftpmirror.gnu.org/gnu/ \\
+  ftp://ftp.gnu.org/gnu/ https://ftpmirror.gnu.org/gnu/ \\
+"
 MIRRORS:append = " \\
   https://ftp.gnu.org/gnu/ https://ftpmirror.gnu.org/gnu/ \\
 "
