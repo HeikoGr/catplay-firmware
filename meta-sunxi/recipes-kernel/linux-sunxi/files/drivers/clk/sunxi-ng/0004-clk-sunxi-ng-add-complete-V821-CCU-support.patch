@@ -1,0 +1,903 @@
+Date: Wed, 12 Aug 2026 10:10:31 +0200
+Subject: [PATCH] clk: sunxi-ng: add complete V821 CCU support
+
+Upstream-Status: Pending
+---
+ drivers/clk/sunxi-ng/Kconfig                  |  10 +
+ drivers/clk/sunxi-ng/Makefile                 |   4 +
+ drivers/clk/sunxi-ng/ccu-sun300i-v821-r.c     | 330 ++++++++++++++++
+ drivers/clk/sunxi-ng/ccu-sun300i-v821-r.h     |  10 +
+ drivers/clk/sunxi-ng/ccu-sun300i-v821.c       | 210 ++++++++++
+ drivers/clk/sunxi-ng/ccu-sun300i-v821.h       |  11 +
+ include/dt-bindings/clock/sun300i-v821-ccu.h  | 113 ++++++
+ .../dt-bindings/clock/sun300i-v821-r-ccu.h    |  42 ++
+ include/dt-bindings/reset/sun300i-v821-ccu.h  |  64 +++
+ .../dt-bindings/reset/sun300i-v821-r-ccu.h    |   7 +
+ 10 files changed, 801 insertions(+)
+ create mode 100644 drivers/clk/sunxi-ng/ccu-sun300i-v821-r.c
+ create mode 100644 drivers/clk/sunxi-ng/ccu-sun300i-v821-r.h
+ create mode 100644 drivers/clk/sunxi-ng/ccu-sun300i-v821.c
+ create mode 100644 drivers/clk/sunxi-ng/ccu-sun300i-v821.h
+ create mode 100644 include/dt-bindings/clock/sun300i-v821-ccu.h
+ create mode 100644 include/dt-bindings/clock/sun300i-v821-r-ccu.h
+ create mode 100644 include/dt-bindings/reset/sun300i-v821-ccu.h
+ create mode 100644 include/dt-bindings/reset/sun300i-v821-r-ccu.h
+
+diff --git a/drivers/clk/sunxi-ng/Kconfig b/drivers/clk/sunxi-ng/Kconfig
+index 6af2d020e03e..4b5aedccc445 100644
+--- a/drivers/clk/sunxi-ng/Kconfig
++++ b/drivers/clk/sunxi-ng/Kconfig
+@@ -22,6 +22,16 @@ config SUN20I_D1_R_CCU
+ 	default ARCH_SUNXI
+ 	depends on MACH_SUN8I || RISCV || COMPILE_TEST
+ 
++config SUN300I_V821_CCU
++	tristate "Support for the Allwinner V821 CCU"
++	default ARCH_SUNXI
++	depends on RISCV || COMPILE_TEST
++
++config SUN300I_V821_R_CCU
++	tristate "Support for the Allwinner V821 R CCU"
++	default ARCH_SUNXI
++	depends on RISCV || COMPILE_TEST
++
+ config SUN50I_A64_CCU
+ 	tristate "Support for the Allwinner A64 CCU"
+ 	default ARCH_SUNXI
+diff --git a/drivers/clk/sunxi-ng/Makefile b/drivers/clk/sunxi-ng/Makefile
+index a1c4087d7241..3fd55242c746 100644
+--- a/drivers/clk/sunxi-ng/Makefile
++++ b/drivers/clk/sunxi-ng/Makefile
+@@ -27,6 +27,8 @@ sunxi-ccu-y			+= ccu_mp.o
+ obj-$(CONFIG_SUNIV_F1C100S_CCU)	+= suniv-f1c100s-ccu.o
+ obj-$(CONFIG_SUN20I_D1_CCU)	+= sun20i-d1-ccu.o
+ obj-$(CONFIG_SUN20I_D1_R_CCU)	+= sun20i-d1-r-ccu.o
++obj-$(CONFIG_SUN300I_V821_CCU)	+= sun300i-v821-ccu.o
++obj-$(CONFIG_SUN300I_V821_R_CCU)	+= sun300i-v821-r-ccu.o
+ obj-$(CONFIG_SUN50I_A64_CCU)	+= sun50i-a64-ccu.o
+ obj-$(CONFIG_SUN50I_A100_CCU)	+= sun50i-a100-ccu.o
+ obj-$(CONFIG_SUN50I_A100_R_CCU)	+= sun50i-a100-r-ccu.o
+@@ -55,6 +57,8 @@ obj-$(CONFIG_SUN9I_A80_CCU)	+= sun9i-a80-usb-ccu.o
+ suniv-f1c100s-ccu-y		+= ccu-suniv-f1c100s.o
+ sun20i-d1-ccu-y			+= ccu-sun20i-d1.o
+ sun20i-d1-r-ccu-y		+= ccu-sun20i-d1-r.o
++sun300i-v821-ccu-y		+= ccu-sun300i-v821.o
++sun300i-v821-r-ccu-y		+= ccu-sun300i-v821-r.o
+ sun50i-a64-ccu-y		+= ccu-sun50i-a64.o
+ sun50i-a100-ccu-y		+= ccu-sun50i-a100.o
+ sun50i-a100-r-ccu-y		+= ccu-sun50i-a100-r.o
+diff --git a/drivers/clk/sunxi-ng/ccu-sun300i-v821-r.c b/drivers/clk/sunxi-ng/ccu-sun300i-v821-r.c
+new file mode 100644
+index 000000000000..e6e5eaef5674
+--- /dev/null
++++ b/drivers/clk/sunxi-ng/ccu-sun300i-v821-r.c
+@@ -0,0 +1,330 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Copyright (c) 2023 Allwinner Technology Co., Ltd.
++ * Copyright (c) 2026 CatPlay project
++ *
++ * Mainline-compatible sun300i-v821 R CCU using the vendor PLL sequencing
++ * extensions backported to ccu_nm.
++ */
++
++#include <linux/clk-provider.h>
++#include <linux/io.h>
++#include <linux/module.h>
++#include <linux/of_address.h>
++
++#include "ccu_common.h"
++#include "ccu_reset.h"
++#include "ccu_gate.h"
++#include "ccu_mp.h"
++#include "ccu_nm.h"
++
++#include "ccu-sun300i-v821-r.h"
++
++#define SUN300I_V821_PLL_CPU_CTRL_REG	0x0000
++#define SUN300I_V821_PLL_PERI_CTRL_REG	0x0020
++#define SUN300I_V821_PLL_PERI_CTRL1_REG	0x0024
++#define SUN300I_V821_PLL_DDR_CTRL_REG	0x0080
++#define SUN300I_V821_DCXO_STATUS_REG	0x0404
++#define SUN300I_V821_AHB_CFG_REG		0x0500
++#define SUN300I_V821_APB_CFG_REG		0x0504
++#define SUN300I_V821_A27L2_CFG_REG		0x0588
++
++static struct ccu_nm pll_cpu_clk = {
++	.output		= BIT(27),
++	.enable		= BIT(31),
++	.lock		= BIT(28),
++	.lock_enable	= BIT(29),
++	.ldo_en		= BIT(30),
++	.n		= _SUNXI_CCU_MULT_OFFSET_MIN_MAX(8, 8, 1, 16, 60),
++	.min_rate	= 640000000,
++	.max_rate	= 2400000000U,
++	.fixed_post_div = 2,
++	.common		= {
++		.reg		= SUN300I_V821_PLL_CPU_CTRL_REG,
++		.features	= CCU_FEATURE_FIXED_POSTDIV,
++		.hw.init	= CLK_HW_INIT("pll-cpu", "dcxo",
++					      &ccu_nm_ops,
++					      CLK_SET_RATE_UNGATE |
++					      CLK_IS_CRITICAL),
++	},
++};
++
++static struct ccu_nm pll_peri_parent_clk = {
++	.output		= BIT(27),
++	.enable		= BIT(31),
++	.lock		= BIT(28),
++	.lock_enable	= BIT(29),
++	.ldo_en		= BIT(30),
++	.n		= _SUNXI_CCU_MULT_OFFSET_MIN_MAX(8, 8, 1, 84, 134),
++	.min_rate	= 2016000000U,
++	.max_rate	= 3216000000U,
++	.fixed_post_div = 5,
++	.fixed_pre_div = 2,
++	.common		= {
++		.reg		= SUN300I_V821_PLL_PERI_CTRL_REG,
++		.features	= CCU_FEATURE_FIXED_POSTDIV |
++				  CCU_FEATURE_FIXED_PREDIV,
++		.hw.init	= CLK_HW_INIT("pll-peri-parent", "dcxo",
++					      &ccu_nm_ops,
++					      CLK_SET_RATE_UNGATE | CLK_IGNORE_UNUSED),
++	},
++};
++
++static CLK_FIXED_FACTOR_HW(pll_peri_cko_1536_clk, "pll-peri-cko-1536m",
++			   &pll_peri_parent_clk.common.hw, 2, 1, 0);
++static CLK_FIXED_FACTOR_HW(pll_peri_cko_1024_clk, "pll-peri-cko-1024m",
++			   &pll_peri_parent_clk.common.hw, 3, 1, 0);
++static CLK_FIXED_FACTOR_HW(pll_peri_cko_768_clk, "pll-peri-cko-768m",
++			   &pll_peri_parent_clk.common.hw, 4, 1, 0);
++static CLK_FIXED_FACTOR_HW(pll_peri_cko_614_clk, "pll-peri-cko-614m",
++			   &pll_peri_parent_clk.common.hw, 5, 1, 0);
++static CLK_FIXED_FACTOR_HW(pll_peri_cko_512_clk, "pll-peri-cko-512m",
++			   &pll_peri_parent_clk.common.hw, 6, 1, 0);
++static CLK_FIXED_FACTOR_HW(pll_peri_cko_384_clk, "pll-peri-cko-384m",
++			   &pll_peri_parent_clk.common.hw, 8, 1, 0);
++static CLK_FIXED_FACTOR_HW(pll_peri_cko_341_clk, "pll-peri-cko-341m",
++			   &pll_peri_parent_clk.common.hw, 9, 1, 0);
++static CLK_FIXED_FACTOR_HW(pll_peri_cko_307_clk, "pll-peri-cko-307m",
++			   &pll_peri_parent_clk.common.hw, 10, 1, 0);
++static CLK_FIXED_FACTOR_HW(pll_peri_cko_236_clk, "pll-peri-cko-236m",
++			   &pll_peri_parent_clk.common.hw, 13, 1, 0);
++static CLK_FIXED_FACTOR_HW(pll_peri_cko_219_clk, "pll-peri-cko-219m",
++			   &pll_peri_parent_clk.common.hw, 14, 1, 0);
++static CLK_FIXED_FACTOR_HW(pll_peri_cko_192_clk, "pll-peri-cko-192m",
++			   &pll_peri_parent_clk.common.hw, 16, 1, 0);
++static CLK_FIXED_FACTOR_HW(pll_peri_cko_118_clk, "pll-peri-cko-118m",
++			   &pll_peri_parent_clk.common.hw, 26, 1, 0);
++static CLK_FIXED_FACTOR_HW(pll_peri_cko_96_clk, "pll-peri-cko-96m",
++			   &pll_peri_parent_clk.common.hw, 32, 1, 0);
++static CLK_FIXED_FACTOR_HW(pll_peri_cko_48_clk, "pll-peri-cko-48m",
++			   &pll_peri_parent_clk.common.hw, 64, 1, 0);
++static CLK_FIXED_FACTOR_HW(pll_peri_cko_24_clk, "pll-peri-cko-24m",
++			   &pll_peri_parent_clk.common.hw, 128, 1, 0);
++static CLK_FIXED_FACTOR_HW(pll_peri_cko_12_clk, "pll-peri-cko-12m",
++			   &pll_peri_parent_clk.common.hw, 256, 1, 0);
++
++/*
++ * Register PLL-DDR for visibility, but keep it critical and do not request
++ * rate propagation from consumers.  Generic ccu_nm cannot model vendor SDM,
++ * so this clock must not be changed while Linux is running from DRAM.
++ */
++static struct ccu_nm pll_ddr_clk = {
++	.enable		= BIT(31),
++	.lock		= BIT(28),
++	.n		= _SUNXI_CCU_MULT_OFFSET_MIN_MAX(8, 8, 1, 12, 71),
++	.m		= _SUNXI_CCU_DIV(0, 1),
++	.min_rate	= 312000000,
++	.max_rate	= 2000000000U,
++	.common		= {
++		.reg		= SUN300I_V821_PLL_DDR_CTRL_REG,
++		.hw.init	= CLK_HW_INIT("pll-ddr", "dcxo",
++					      &ccu_nm_ops,
++					      CLK_IS_CRITICAL),
++	},
++};
++
++static const char * const dcxo_parents[] = {
++	"dcxo40M", "dcxo24M"
++};
++
++static SUNXI_CCU_MUX(dcxo_clk, "dcxo", dcxo_parents,
++		     SUN300I_V821_DCXO_STATUS_REG, 31, 1,
++		     CLK_IS_CRITICAL);
++
++static const char * const ahb_parents[] = {
++	"dcxo", "pll-peri-cko-768m", "rc-1m"
++};
++
++static SUNXI_CCU_M_WITH_MUX(ahb_clk, "ahb", ahb_parents,
++			    SUN300I_V821_AHB_CFG_REG,
++			    0, 5, 24, 2,
++			    CLK_SET_RATE_PARENT | CLK_IS_CRITICAL);
++
++static const char * const apb_parents[] = {
++	"dcxo", "pll-peri-cko-384m", "rc-1m"
++};
++
++static SUNXI_CCU_M_WITH_MUX(apb_clk, "apb", apb_parents,
++			    SUN300I_V821_APB_CFG_REG,
++			    0, 5, 24, 2,
++			    CLK_SET_RATE_PARENT | CLK_IS_CRITICAL);
++
++static const char * const rtc_apb_parents[] = {
++	"rc-1m", "pll-peri-cko-96m", "dcxo"
++};
++
++static SUNXI_CCU_M_WITH_MUX(rtc_apb_clk, "rtc-apb", rtc_apb_parents,
++			    0x0508, 0, 5, 24, 2,
++			    CLK_SET_RATE_PARENT);
++
++static SUNXI_CCU_GATE(pwrctrl_bus_clk, "pwrctrl", "dcxo",
++		      0x0550, BIT(6), CLK_IGNORE_UNUSED);
++static SUNXI_CCU_GATE(tccal_bus_clk, "tccal", "dcxo",
++		      0x0550, BIT(2), 0);
++
++static const char * const apb_spc_parents[] = {
++	"dcxo", "", "rc-1m", "pll-peri-cko-192m"
++};
++
++static SUNXI_CCU_M_WITH_MUX(apb_spc_clk, "apb-spc", apb_spc_parents,
++			    0x0580, 0, 5, 24, 2,
++			    CLK_SET_RATE_PARENT);
++
++static const char * const e907_parents[] = {
++	"dcxo", "pll-peri-cko-614m", "rc-1m", "rc-1m",
++	"pll-cpu", "pll-peri-cko-1024m",
++	"pll-peri-cko-614m", "pll-peri-cko-614m"
++};
++
++static SUNXI_CCU_M_WITH_MUX(e907_clk, "e907", e907_parents,
++			    0x0584, 0, 5, 24, 3,
++			    CLK_SET_RATE_NO_REPARENT);
++
++static const char * const a27l2_parents[] = {
++	"dcxo", "", "rc-1m", "rc-1m", "pll-cpu",
++	"pll-peri-cko-1024m", "pll-peri-cko-768m",
++	"pll-peri-cko-768m"
++};
++
++static SUNXI_CCU_M_WITH_MUX_GATE(a27l2_clk, "a27l2", a27l2_parents,
++				 SUN300I_V821_A27L2_CFG_REG,
++				 0, 5, 24, 3, BIT(31),
++				 CLK_IGNORE_UNUSED |
++				 CLK_SET_RATE_PARENT |
++				 CLK_SET_RATE_NO_REPARENT);
++
++static struct ccu_reset_map sun300i_v821_r_ccu_resets[] = {
++	[RST_BUS_WLAN] = { 0x0518, BIT(0) },
++};
++
++static struct clk_hw_onecell_data sun300i_v821_r_hw_clks = {
++	.hws = {
++		[CLK_PLL_CPU]			= &pll_cpu_clk.common.hw,
++		[CLK_PLL_DDR]			= &pll_ddr_clk.common.hw,
++		[CLK_PLL_PERI_PARENT]		= &pll_peri_parent_clk.common.hw,
++		[CLK_PLL_PERI_CKO_1536M]	= &pll_peri_cko_1536_clk.hw,
++		[CLK_PLL_PERI_CKO_1024M]	= &pll_peri_cko_1024_clk.hw,
++		[CLK_PLL_PERI_CKO_768M]		= &pll_peri_cko_768_clk.hw,
++		[CLK_PLL_PERI_CKO_614M]		= &pll_peri_cko_614_clk.hw,
++		[CLK_PLL_PERI_CKO_512M]		= &pll_peri_cko_512_clk.hw,
++		[CLK_PLL_PERI_CKO_384M]		= &pll_peri_cko_384_clk.hw,
++		[CLK_PLL_PERI_CKO_341M]		= &pll_peri_cko_341_clk.hw,
++		[CLK_PLL_PERI_CKO_307M]		= &pll_peri_cko_307_clk.hw,
++		[CLK_PLL_PERI_CKO_236M]		= &pll_peri_cko_236_clk.hw,
++		[CLK_PLL_PERI_CKO_219M]		= &pll_peri_cko_219_clk.hw,
++		[CLK_PLL_PERI_CKO_192M]		= &pll_peri_cko_192_clk.hw,
++		[CLK_PLL_PERI_CKO_118M]		= &pll_peri_cko_118_clk.hw,
++		[CLK_PLL_PERI_CKO_96M]		= &pll_peri_cko_96_clk.hw,
++		[CLK_PLL_PERI_CKO_48M]		= &pll_peri_cko_48_clk.hw,
++		[CLK_PLL_PERI_CKO_24M]		= &pll_peri_cko_24_clk.hw,
++		[CLK_PLL_PERI_CKO_12M]		= &pll_peri_cko_12_clk.hw,
++		[CLK_DCXO]			= &dcxo_clk.common.hw,
++		[CLK_AHB]			= &ahb_clk.common.hw,
++		[CLK_APB0]			= &apb_clk.common.hw,
++		[CLK_RTC_APB]			= &rtc_apb_clk.common.hw,
++		[CLK_PWRCTRL]			= &pwrctrl_bus_clk.common.hw,
++		[CLK_TCCAL]			= &tccal_bus_clk.common.hw,
++		[CLK_APB_SPC]			= &apb_spc_clk.common.hw,
++		[CLK_E907]			= &e907_clk.common.hw,
++		[CLK_A27L2]			= &a27l2_clk.common.hw,
++	},
++	.num = CLK_NUMBER,
++};
++
++static struct ccu_common *sun300i_v821_r_ccu_clks[] = {
++	&pll_cpu_clk.common,
++	&pll_peri_parent_clk.common,
++	&pll_ddr_clk.common,
++	&dcxo_clk.common,
++	&ahb_clk.common,
++	&apb_clk.common,
++	&rtc_apb_clk.common,
++	&pwrctrl_bus_clk.common,
++	&tccal_bus_clk.common,
++	&apb_spc_clk.common,
++	&e907_clk.common,
++	&a27l2_clk.common,
++};
++
++static const struct sunxi_ccu_desc sun300i_v821_r_ccu_desc = {
++	.ccu_clks	= sun300i_v821_r_ccu_clks,
++	.num_ccu_clks	= ARRAY_SIZE(sun300i_v821_r_ccu_clks),
++	.hw_clks	= &sun300i_v821_r_hw_clks,
++	.resets		= sun300i_v821_r_ccu_resets,
++	.num_resets	= ARRAY_SIZE(sun300i_v821_r_ccu_resets),
++};
++
++/*
++ * Match the vendor post-rate reset: toggle the PLL output at BIT(27), not the
++ * master enable at BIT(31).  ccu_nm separately gates BIT(27) while factors are
++ * being programmed and waits for lock before restoring it.
++ */
++static struct ccu_pll_nb sun300i_v821_pll_cpu_nb = {
++	.common	= &pll_cpu_clk.common,
++	.enable	= BIT(27),
++	.lock	= BIT(28),
++};
++
++static struct ccu_mux_nb sun300i_v821_a27_cpu_nb = {
++	.common		= &a27l2_clk.common,
++	.cm		= &a27l2_clk.mux,
++	.delay_us	= 1,
++	.bypass_index	= 6,
++};
++
++static void __init sun300i_v821_init_pll_limits(bool v821b, bool dcxo24m)
++{
++	if (dcxo24m) {
++		pll_cpu_clk.fixed_post_div = 1;
++		pll_peri_parent_clk.fixed_post_div = 3;
++		pll_cpu_clk.n.min = v821b ? 20 : 14;
++		pll_cpu_clk.n.max = v821b ? 54 : 50;
++		pll_cpu_clk.min_rate = v821b ? 480000000 : 336000000;
++		pll_cpu_clk.max_rate = v821b ? 1296000000 : 1200000000;
++	} else {
++		pll_cpu_clk.fixed_post_div = 2;
++		pll_peri_parent_clk.fixed_post_div = 5;
++		pll_cpu_clk.n.min = v821b ? 24 : 16;
++		pll_cpu_clk.n.max = v821b ? 64 : 60;
++		pll_cpu_clk.min_rate = v821b ? 960000000 : 640000000;
++		pll_cpu_clk.max_rate = v821b ? 2560000000U : 2400000000U;
++	}
++}
++
++static void __init sun300i_v821_r_ccu_setup(struct device_node *node)
++{
++	void __iomem *reg;
++	u32 dcxo_status;
++	u32 val;
++	bool v821b;
++
++	reg = of_io_request_and_map(node, 0, of_node_full_name(node));
++	if (IS_ERR(reg)) {
++		pr_err("%pOF: could not map R CCU registers\n", node);
++		return;
++	}
++
++	dcxo_status = readl(reg + SUN300I_V821_DCXO_STATUS_REG);
++	v821b = of_device_is_compatible(node,
++					"allwinner,sun300i-v821b-r-ccu");
++	sun300i_v821_init_pll_limits(v821b, dcxo_status & BIT(31));
++
++	/* Keep all CKO gates enabled until they are modeled individually. */
++	val = readl(reg + SUN300I_V821_PLL_PERI_CTRL1_REG);
++	val |= GENMASK(15, 0);
++	writel(val, reg + SUN300I_V821_PLL_PERI_CTRL1_REG);
++
++	of_sunxi_ccu_probe(node, reg, &sun300i_v821_r_ccu_desc);
++
++	ccu_pll_notifier_register(&sun300i_v821_pll_cpu_nb);
++	ccu_mux_notifier_register(pll_cpu_clk.common.hw.clk,
++				  &sun300i_v821_a27_cpu_nb);
++}
++
++CLK_OF_DECLARE(sun300i_v821_r_ccu, "allwinner,sun300i-v821-r-ccu",
++	       sun300i_v821_r_ccu_setup);
++CLK_OF_DECLARE(sun300i_v821b_r_ccu, "allwinner,sun300i-v821b-r-ccu",
++	       sun300i_v821_r_ccu_setup);
++
++MODULE_DESCRIPTION("Allwinner sun300i-v821 R clock driver");
++MODULE_LICENSE("GPL");
+diff --git a/drivers/clk/sunxi-ng/ccu-sun300i-v821-r.h b/drivers/clk/sunxi-ng/ccu-sun300i-v821-r.h
+new file mode 100644
+index 000000000000..0ff56799b5ff
+--- /dev/null
++++ b/drivers/clk/sunxi-ng/ccu-sun300i-v821-r.h
+@@ -0,0 +1,10 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++#ifndef _CCU_SUN300I_V821_R_H_
++#define _CCU_SUN300I_V821_R_H_
++
++#include <dt-bindings/clock/sun300i-v821-r-ccu.h>
++#include <dt-bindings/reset/sun300i-v821-r-ccu.h>
++
++#define CLK_NUMBER	CLK_AON_NUMBER
++
++#endif
+diff --git a/drivers/clk/sunxi-ng/ccu-sun300i-v821.c b/drivers/clk/sunxi-ng/ccu-sun300i-v821.c
+new file mode 100644
+index 000000000000..5e8e36337698
+--- /dev/null
++++ b/drivers/clk/sunxi-ng/ccu-sun300i-v821.c
+@@ -0,0 +1,210 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Minimal CCU support for Allwinner sun300i-v821.
++ *
++ * This intentionally models only the USB-, UART- and HSTIMER-related
++ * gates/resets needed for early V821 mainline bring-up. Offsets and IDs match
++ * the vendor sun300i-v821 CCU driver and dt-bindings.
++ */
++
++#include <linux/clk-provider.h>
++#include <linux/io.h>
++#include <linux/module.h>
++#include <linux/of_address.h>
++#include <linux/platform_device.h>
++
++#include "ccu_common.h"
++#include "ccu_gate.h"
++#include "ccu_mp.h"
++#include "ccu_reset.h"
++
++#include "ccu-sun300i-v821.h"
++
++static SUNXI_CCU_GATE(usb_24m_clk, "usb-24m", "dcxo",
++		      0x007c, BIT(3), 0);
++static SUNXI_CCU_GATE(usb_12m_clk, "usb-12m", "dcxo",
++		      0x007c, BIT(2), 0);
++static SUNXI_CCU_GATE(usb_48m_clk, "usb-48m", "dcxo",
++		      0x007c, BIT(1), 0);
++
++static SUNXI_CCU_GATE(usbohci_clk, "usbohci", "dcxo",
++		      0x0080, BIT(22), 0);
++static SUNXI_CCU_GATE(usbehci_clk, "usbehci", "dcxo",
++		      0x0080, BIT(21), 0);
++static SUNXI_CCU_GATE(usbotg_clk, "usbotg", "dcxo",
++		      0x0080, BIT(20), 0);
++static SUNXI_CCU_GATE(usb_clk, "usb-hclk", "dcxo",
++		      0x0080, BIT(19), 0);
++
++static SUNXI_CCU_GATE(uart3_clk, "uart3", "apb-spc",
++		      0x0080, BIT(18), CLK_IGNORE_UNUSED);
++static SUNXI_CCU_GATE(uart2_clk, "uart2", "apb-spc",
++		      0x0080, BIT(17), CLK_IGNORE_UNUSED);
++static SUNXI_CCU_GATE(uart1_clk, "uart1", "apb-spc",
++		      0x0080, BIT(16), CLK_IGNORE_UNUSED);
++static SUNXI_CCU_GATE(uart0_clk, "uart0", "apb-spc",
++		      0x0080, BIT(15), CLK_IGNORE_UNUSED);
++static SUNXI_CCU_GATE(twi0_clk, "twi0", "apb-spc",
++		      0x0080, BIT(14), 0);
++
++static SUNXI_CCU_GATE(hstimer_clk, "hstimer", "ahb",
++		      0x0080, BIT(5), 0);
++
++static const char * const smhc0_parents[] = {
++	"dcxo", "pll-peri-cko-192m", "pll-peri-cko-219m", "",
++	"", "",
++};
++static SUNXI_CCU_MP_WITH_MUX_GATE_NO_INDEX(smhc0_clk, "smhc0",
++						  smhc0_parents, 0x0014,
++						  0, 5, 16, 5, 24, 3,
++						  BIT(31), 0);
++
++static const char * const smhc1_parents[] = {
++	"dcxo", "pll-peri-cko-192m", "pll-peri-cko-219m", "",
++	"", "",
++};
++static SUNXI_CCU_MP_WITH_MUX_GATE_NO_INDEX(smhc1_clk, "smhc1",
++						  smhc1_parents, 0x005c,
++						  0, 5, 16, 5, 24, 3,
++						  BIT(31), 0);
++
++static SUNXI_CCU_GATE(spi_clk, "spi", "dcxo",
++		      0x001c, BIT(31), 0);
++static const char * const spif_parents[] = {
++	"dcxo", "pll-peri-cko-512m", "pll-peri-cko-384m",
++	"pll-peri-cko-307m"
++};
++static SUNXI_CCU_MP_WITH_MUX_GATE(spif_clk, "spif", spif_parents,
++				  0x0020, 0, 4, 16, 2, 24, 2,
++				  BIT(31), 0);
++static SUNXI_CCU_GATE(spi_bus_clk, "spi-hbus", "dcxo",
++		      0x0084, BIT(4), 0);
++static SUNXI_CCU_GATE(spif_bus_clk, "spif-hbus", "dcxo",
++		      0x0084, BIT(5), 0);
++static SUNXI_CCU_GATE(twi2_clk, "twi2", "apb-spc",
++		      0x0084, BIT(25), 0);
++static SUNXI_CCU_GATE(twi1_clk, "twi1", "apb-spc",
++		      0x0084, BIT(24), 0);
++
++static SUNXI_CCU_GATE(smhc1_bus_clk, "smhc-bus1", "dcxo",
++		      0x0084, BIT(21), 0);
++static SUNXI_CCU_GATE(smhc0_bus_clk, "smhc-bus0", "dcxo",
++		      0x0084, BIT(20), 0);
++static SUNXI_CCU_GATE(smhc1_mbus_ahb_clk, "smhc1-mbus", "dcxo",
++		      0x0084, BIT(16), 0);
++static SUNXI_CCU_GATE(smhc0_mbus_ahb_clk, "smhc0-mbus", "dcxo",
++		      0x0084, BIT(15), 0);
++
++static SUNXI_CCU_GATE(usb_mbus_ahb_clk, "usb-mbus", "dcxo",
++		      0x0084, BIT(14), 0);
++
++static struct ccu_common *sun300i_v821_ccu_clks[] = {
++	&usb_24m_clk.common,
++	&usb_12m_clk.common,
++	&usb_48m_clk.common,
++	&usbohci_clk.common,
++	&usbehci_clk.common,
++	&usbotg_clk.common,
++	&usb_clk.common,
++	&uart3_clk.common,
++	&uart2_clk.common,
++	&uart1_clk.common,
++	&uart0_clk.common,
++	&twi0_clk.common,
++	&hstimer_clk.common,
++	&spi_clk.common,
++	&spif_clk.common,
++	&spi_bus_clk.common,
++	&spif_bus_clk.common,
++	&twi2_clk.common,
++	&twi1_clk.common,
++	&smhc0_clk.common,
++	&smhc1_clk.common,
++	&smhc1_bus_clk.common,
++	&smhc0_bus_clk.common,
++	&smhc1_mbus_ahb_clk.common,
++	&smhc0_mbus_ahb_clk.common,
++	&usb_mbus_ahb_clk.common,
++};
++
++static struct clk_hw_onecell_data sun300i_v821_hw_clks = {
++	.num	= CLK_NUMBER,
++	.hws	= {
++		[CLK_USB_24M]	= &usb_24m_clk.common.hw,
++		[CLK_USB_12M]	= &usb_12m_clk.common.hw,
++		[CLK_USB_48M]	= &usb_48m_clk.common.hw,
++		[CLK_USBOHCI]	= &usbohci_clk.common.hw,
++		[CLK_USBEHCI]	= &usbehci_clk.common.hw,
++		[CLK_USBOTG]	= &usbotg_clk.common.hw,
++		[CLK_USB]	= &usb_clk.common.hw,
++		[CLK_UART3]	= &uart3_clk.common.hw,
++		[CLK_UART2]	= &uart2_clk.common.hw,
++		[CLK_UART1]	= &uart1_clk.common.hw,
++		[CLK_UART0]	= &uart0_clk.common.hw,
++		[CLK_TWI0]	= &twi0_clk.common.hw,
++		[CLK_HSTIMER]	= &hstimer_clk.common.hw,
++		[CLK_SPI]	= &spi_clk.common.hw,
++		[CLK_SPIF]	= &spif_clk.common.hw,
++		[CLK_BUS_SPI]	= &spi_bus_clk.common.hw,
++		[CLK_BUS_SPIF]	= &spif_bus_clk.common.hw,
++		[CLK_TWI2]	= &twi2_clk.common.hw,
++		[CLK_TWI1]	= &twi1_clk.common.hw,
++		[CLK_SMHC0]	= &smhc0_clk.common.hw,
++		[CLK_SMHC1]	= &smhc1_clk.common.hw,
++		[CLK_BUS_SMHC1]	= &smhc1_bus_clk.common.hw,
++		[CLK_BUS_SMHC0]	= &smhc0_bus_clk.common.hw,
++		[CLK_MBUS_SMHC1]	= &smhc1_mbus_ahb_clk.common.hw,
++		[CLK_MBUS_SMHC0]	= &smhc0_mbus_ahb_clk.common.hw,
++		[CLK_MBUS_USB]	= &usb_mbus_ahb_clk.common.hw,
++		[CLK_DE_HB]	= NULL,
++	},
++};
++
++static const struct ccu_reset_map sun300i_v821_ccu_resets[] = {
++	[RST_BUS_USBPHY]	= { 0x0090, BIT(23) },
++	[RST_BUS_USBOHCI]	= { 0x0090, BIT(22) },
++	[RST_BUS_USBEHCI]	= { 0x0090, BIT(21) },
++	[RST_BUS_USBOTG]	= { 0x0090, BIT(20) },
++	[RST_BUS_USB]		= { 0x0090, BIT(19) },
++	[RST_BUS_UART3]		= { 0x0090, BIT(18) },
++	[RST_BUS_UART2]		= { 0x0090, BIT(17) },
++	[RST_BUS_UART1]		= { 0x0090, BIT(16) },
++	[RST_BUS_UART0]		= { 0x0090, BIT(15) },
++	[RST_BUS_TWI0]		= { 0x0090, BIT(14) },
++	[RST_BUS_HSTIMER]	= { 0x0090, BIT(5) },
++	[RST_BUS_SPI]		= { 0x0094, BIT(4) },
++	[RST_BUS_SPIF]		= { 0x0094, BIT(5) },
++	[RST_BUS_TWI2]		= { 0x0094, BIT(25) },
++	[RST_BUS_TWI1]		= { 0x0094, BIT(24) },
++	[RST_BUS_SMHC1]		= { 0x0094, BIT(21) },
++	[RST_BUS_SMHC0]		= { 0x0094, BIT(20) },
++};
++
++static const struct sunxi_ccu_desc sun300i_v821_ccu_desc = {
++	.ccu_clks	= sun300i_v821_ccu_clks,
++	.num_ccu_clks	= ARRAY_SIZE(sun300i_v821_ccu_clks),
++
++	.hw_clks	= &sun300i_v821_hw_clks,
++
++	.resets		= sun300i_v821_ccu_resets,
++	.num_resets	= ARRAY_SIZE(sun300i_v821_ccu_resets),
++};
++
++static void __init sun300i_v821_ccu_setup(struct device_node *node)
++{
++	void __iomem *reg;
++
++	reg = of_io_request_and_map(node, 0, of_node_full_name(node));
++	if (IS_ERR(reg)) {
++		pr_err("%pOF: Could not map the clock registers\n", node);
++		return;
++	}
++
++	of_sunxi_ccu_probe(node, reg, &sun300i_v821_ccu_desc);
++}
++CLK_OF_DECLARE(sun300i_v821_ccu, "allwinner,sun300i-v821-ccu",
++	       sun300i_v821_ccu_setup);
++
++MODULE_IMPORT_NS("SUNXI_CCU");
++MODULE_DESCRIPTION("Support for the Allwinner sun300i-v821 CCU");
++MODULE_LICENSE("GPL");
+diff --git a/drivers/clk/sunxi-ng/ccu-sun300i-v821.h b/drivers/clk/sunxi-ng/ccu-sun300i-v821.h
+new file mode 100644
+index 000000000000..e1188857d9bd
+--- /dev/null
++++ b/drivers/clk/sunxi-ng/ccu-sun300i-v821.h
+@@ -0,0 +1,11 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++
++#ifndef _CCU_SUN300I_V821_H_
++#define _CCU_SUN300I_V821_H_
++
++#include <dt-bindings/clock/sun300i-v821-ccu.h>
++#include <dt-bindings/reset/sun300i-v821-ccu.h>
++
++#define CLK_NUMBER		(CLK_DE_HB + 1)
++
++#endif /* _CCU_SUN300I_V821_H_ */
+diff --git a/include/dt-bindings/clock/sun300i-v821-ccu.h b/include/dt-bindings/clock/sun300i-v821-ccu.h
+new file mode 100644
+index 000000000000..cf804379be5b
+--- /dev/null
++++ b/include/dt-bindings/clock/sun300i-v821-ccu.h
+@@ -0,0 +1,113 @@
++// SPDX-License-Identifier: (GPL-2.0+ or MIT)
++/* Copyright(c) 2020 - 2023 Allwinner Technology Co.,Ltd. All rights reserved. */
++/*
++ * Copyright (C) 2023 rengaomin@allwinnertech.com
++ */
++
++#ifndef _DT_BINDINGS_CLK_SUN300I_V821_H_
++#define _DT_BINDINGS_CLK_SUN300I_V821_H_
++
++#define CLK_DRAM		0
++#define CLK_E907_TS		1
++#define CLK_AL27_MT		2
++#define CLK_SMHC0		3
++#define CLK_SS			4
++#define CLK_SPI			5
++#define CLK_SPIF		6
++#define CLK_MCSI		7
++#define CLK_CSI_MASTER0		8
++#define CLK_CSI_MASTER1		9
++#define CLK_SPI2		10
++#define CLK_TCONLCD		11
++#define CLK_DE			12
++#define CLK_G2D			13
++#define CLK_GPADC0_24M		14
++#define CLK_VE			15
++#define CLK_AUDIO_DAC		16
++#define CLK_AUDIO_ADC		17
++#define CLK_I2S0		18
++#define CLK_SMHC1		19
++#define CLK_PLL_AUDIO_4X	20
++#define CLK_PLL_AUDIO_1X	21
++#define CLK_SPI1		22
++#define CLK_GMAC_PCLKDIV	23
++#define CLK_GMAC_16M		24
++#define CLK_GMAC_32K		25
++#define CLK_GMAC_27M		26
++#define CLK_GMAC_24M		27
++#define CLK_GMAC_FANOUT		28
++#define CLK_FANOUT0		29
++#define CLK_FANOUT1		30
++#define CLK_GMAC_25M		31
++#define CLK_A27L2_GATE		32
++#define CLK_A27_MSGBOX		33
++#define CLK_USB_24M		34
++#define CLK_USB_12M		35
++#define CLK_USB_48M		36
++#define CLK_AVS			37
++#define CLK_BUS_DPSS_TOP	38
++#define CLK_BUS_GPIO		39
++#define CLK_MCSI_AHB		40
++#define CLK_MBUS_MCSI		41
++#define CLK_VID_OUT		42
++#define CLK_MBUS_VID_OUT	43
++#define CLK_HBUS_GMAC		44
++#define CLK_USBOHCI		45
++#define CLK_USBEHCI		46
++#define CLK_USBOTG		47
++#define CLK_USB			48
++#define CLK_UART3		49
++#define CLK_UART2		50
++#define CLK_UART1		51
++#define CLK_UART0		52
++#define CLK_TWI0		53
++#define CLK_PWM			54
++#define CLK_TRNG		55
++#define CLK_TIMER		56
++#define CLK_SG_DMA		57
++#define CLK_DMA			58
++#define CLK_SYSCRTL		59
++#define CLK_CE			60
++#define CLK_HSTIMER		61
++#define CLK_SPLOCK		62
++#define CLK_BUS_DRAM		63
++#define CLK_RV_MSGBOX		64
++#define CLK_RISCV		65
++#define CLK_MBUS_G2D		66
++#define CLK_BUS_G2D		67
++#define CLK_G2D_HB		68
++#define CLK_TWI2		69
++#define CLK_TWI1		70
++#define CLK_BUS_SPI2		71
++#define CLK_BUS_GMAC		72
++#define CLK_BUS_SMHC1		73
++#define CLK_BUS_SMHC0		74
++#define CLK_BUS_SPI1		75
++#define CLK_GBGSYS		76
++#define CLK_MBUS_GMAC		77
++#define CLK_MBUS_SMHC1		78
++#define CLK_MBUS_SMHC0		79
++#define CLK_MBUS_USB		80
++#define CLK_MBUS_DMA		81
++#define CLK_BUS_I2S0		82
++#define CLK_BUS_ADDA		83
++#define CLK_BUS_SPIF		84
++#define CLK_BUS_SPI		85
++#define CLK_BUS_VE_AHB		86
++#define CLK_MBUS_VE		87
++#define CLK_BUS_THS		88
++#define CLK_GPA			89
++#define CLK_HBUS_MCSI		90
++#define CLK_SBUS_MCSI		91
++#define CLK_BUS_MISP		92
++#define CLK_24M_DCAP_RES	93
++#define CLK_SD_MONITOR		94
++#define CLK_AHB_MONITOR		95
++#define CLK_SBUS_VE		96
++#define CLK_HBUS_VE		97
++#define CLK_BUS_TCON		98
++#define CLK_SGDMA		99
++#define CLK_BUS_DE		100
++#define CLK_DE_HB		101
++
++#endif /* _DT_BINDINGS_CLK_SUN300I_V821_H_ */
+diff --git a/include/dt-bindings/clock/sun300i-v821-r-ccu.h b/include/dt-bindings/clock/sun300i-v821-r-ccu.h
+new file mode 100644
+index 000000000000..6ace021fbf8f
+--- /dev/null
++++ b/include/dt-bindings/clock/sun300i-v821-r-ccu.h
+@@ -0,0 +1,42 @@
++/* SPDX-License-Identifier: (GPL-2.0+ or MIT) */
++#ifndef _DT_BINDINGS_CLK_SUN300I_V821_R_H_
++#define _DT_BINDINGS_CLK_SUN300I_V821_R_H_
++
++#define CLK_PLL_CPU			0
++#define CLK_PLL_DDR			1
++#define CLK_PLL_PERI_PARENT		2
++#define CLK_PLL_PERI_CKO_1536M		3
++#define CLK_PLL_PERI_CKO_1024M		4
++#define CLK_PLL_PERI_CKO_768M		5
++#define CLK_PLL_PERI_CKO_614M		6
++#define CLK_PLL_PERI_CKO_512M		7
++#define CLK_PLL_PERI_CKO_384M		8
++#define CLK_PLL_PERI_CKO_341M		9
++#define CLK_PLL_PERI_CKO_307M		10
++#define CLK_PLL_PERI_CKO_236M		11
++#define CLK_PLL_PERI_CKO_219M		12
++#define CLK_PLL_PERI_CKO_192M		13
++#define CLK_PLL_PERI_CKO_118M		14
++#define CLK_PLL_PERI_CKO_96M		15
++#define CLK_PLL_PERI_CKO_48M		16
++#define CLK_PLL_PERI_CKO_24M		17
++#define CLK_PLL_PERI_CKO_12M		18
++#define CLK_PLL_VIDEO_4X		19
++#define CLK_PLL_VIDEO_2X		20
++#define CLK_PLL_VIDEO_1X		21
++#define CLK_PLL_CSI_4X			22
++#define CLK_PLL_CSI_2X			23
++#define CLK_PLL_CSI_1X			24
++#define CLK_DCXO			25
++#define CLK_AHB				26
++#define CLK_APB0			27
++#define CLK_RTC_APB			28
++#define CLK_PWRCTRL			29
++#define CLK_TCCAL			30
++#define CLK_APB_SPC			31
++#define CLK_E907			32
++#define CLK_A27L2			33
++
++#define CLK_AON_NUMBER			(CLK_A27L2 + 1)
++
++#endif
+diff --git a/include/dt-bindings/reset/sun300i-v821-ccu.h b/include/dt-bindings/reset/sun300i-v821-ccu.h
+new file mode 100644
+index 000000000000..5e942e89bf82
+--- /dev/null
++++ b/include/dt-bindings/reset/sun300i-v821-ccu.h
+@@ -0,0 +1,64 @@
++// SPDX-License-Identifier: (GPL-2.0+ or MIT)
++/* Copyright(c) 2020 - 2023 Allwinner Technology Co.,Ltd. All rights reserved. */
++/*
++ * Copyright (c) 2023 rengaomin@allwinnertech.com
++ */
++
++#ifndef _DT_BINDINGS_RESET_SUN300I_V821_H_
++#define _DT_BINDINGS_RESET_SUN300I_V821_H_
++
++#define RST_BUS_DPSSTOP		0
++#define RST_BUS_MCSI		1
++#define RST_BUS_HRESETN_MCSI	2
++#define RST_BUS_G2D		3
++#define RST_BUS_DE		4
++#define RST_BUS_GMAC		5
++#define RST_BUS_USBPHY		6
++#define RST_BUS_USBOHCI		7
++#define RST_BUS_USBEHCI		8
++#define RST_BUS_USBOTG		9
++#define RST_BUS_USB		10
++#define RST_BUS_UART3		11
++#define RST_BUS_UART2		12
++#define RST_BUS_UART1		13
++#define RST_BUS_UART0		14
++#define RST_BUS_TWI0		15
++#define RST_BUS_PWM		16
++#define RST_BUS_TRNG		17
++#define RST_BUS_TIMER		18
++#define RST_BUS_SGDMA		19
++#define RST_BUS_DMA		20
++#define RST_BUS_SYSCTRL		21
++#define RST_BUS_CE		22
++#define RST_BUS_HSTIMER		23
++#define RST_BUS_SPLOCK		24
++#define RST_BUS_DRAM		25
++#define RST_BUS_RV_MSGBOX	26
++#define RST_BUS_RV_SYS_APB	27
++#define RST_BUS_RV		28
++#define RST_BUS_A27_CFG		29
++#define RST_BUS_A27_MSGBOX	30
++#define RST_BUS_A27		31
++#define RST_BUS_TWI2		32
++#define RST_BUS_TWI1		33
++#define RST_BUS_SPI2		34
++#define RST_BUS_SMHC1		35
++#define RST_BUS_SMHC0		36
++#define RST_BUS_SPI1		37
++#define RST_BUS_DGBSYS		38
++#define RST_BUS_MBUS		39
++#define RST_BUS_TCONLCD		40
++#define RST_BUS_TCON		41
++#define RST_BUS_I2S0		42
++#define RST_BUS_AUDIO		43
++#define RST_BUS_SPIF		44
++#define RST_BUS_SPI		45
++#define RST_BUS_VE		46
++#define RST_BUS_THS		47
++#define RST_BUS_GPADC		48
++#define RST_BUS_A27WFG		49
++#define RST_BUS_GPIOWDG		50
++#define RST_BUS_RV_WDG		51
++#define RST_BUS_E907		52
++
++#endif /* _DT_BINDINGS_RESET_SUN300I_V821_H_ */
+diff --git a/include/dt-bindings/reset/sun300i-v821-r-ccu.h b/include/dt-bindings/reset/sun300i-v821-r-ccu.h
+new file mode 100644
+index 000000000000..3f897f42ba58
+--- /dev/null
++++ b/include/dt-bindings/reset/sun300i-v821-r-ccu.h
+@@ -0,0 +1,7 @@
++/* SPDX-License-Identifier: (GPL-2.0+ or MIT) */
++#ifndef _DT_BINDINGS_RESET_SUN300I_V821_R_H_
++#define _DT_BINDINGS_RESET_SUN300I_V821_R_H_
++
++#define RST_BUS_WLAN			0
++
++#endif

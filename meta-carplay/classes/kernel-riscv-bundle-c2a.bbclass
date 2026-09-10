@@ -120,4 +120,18 @@ python do_assemble_c2rvimage() {
             f.write(align(data, sector_size))
 }
 
+# The entries table passes variable names to d.getVar() indirectly, so
+# BitBake cannot infer these dependencies when computing the task signature.
+do_assemble_c2rvimage[vardeps] += " \
+    C2A_RISCV_BUNDLE_OPENSBI \
+    C2A_RISCV_BUNDLE_DTB \
+    C2A_RISCV_BUNDLE_KERNEL \
+    C2A_RISCV_BUNDLE_OPENSBI_LOADADDRESS \
+    C2A_RISCV_BUNDLE_DTB_LOADADDRESS \
+    C2A_RISCV_BUNDLE_KERNEL_LOADADDRESS \
+    C2A_RISCV_BUNDLE_OPENSBI_JUMPADDRESS \
+    C2A_RISCV_BUNDLE_DTB_JUMPADDRESS \
+    C2A_RISCV_BUNDLE_KERNEL_JUMPADDRESS \
+"
+
 addtask assemble_c2rvimage before do_install after do_compile

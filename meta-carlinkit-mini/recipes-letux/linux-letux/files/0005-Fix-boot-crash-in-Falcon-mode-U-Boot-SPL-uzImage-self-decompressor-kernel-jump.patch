@@ -1,5 +1,7 @@
 Date: Sun, 8 Feb 2026 20:12:42 +0100
 Subject: [PATCH 2/2] Fix boot crash in Falcon mode (U-Boot SPL -> uzImage self-decompressor -> kernel jump)
+Upstream-Status: Pending
+
 
 ---
  arch/mips/boot/compressed/decompress.c |   3 +-

@@ -45,7 +45,6 @@
 		regulator-name = "usb-vbus";
 		regulator-always-on;
 		regulator-boot-on;
-			
 		regulator-min-microvolt = <5000000>;
 		regulator-max-microvolt = <5000000>;
 
@@ -67,7 +66,7 @@
 		regulator-type = "voltage";
 
 	};
-	
+
 	/* Fix Letux limiting baudrate to 1.5M, breaking our 3M preferred baudrate during boot */
 	uart_baud_48m: uart-baud-48m {
 		compatible = "fixed-clock";
@@ -98,7 +97,7 @@
 	chosen {
 		stdout-path = "serial2:3000000n8";
 #if 0	// u-boot and optionally CONFIG_CMDLINE should provide something application specific
-		bootargs = "mem=64M@0x0 rootfstype=ext4 root=/dev/mmcblk0p2 rw earlycon console=ttyS2,115200 clk_ignore_unused ignore_loglevel rootwait";
+		bootargs = "mem=64M@0x0 rootfstype=ext4 root=/dev/mmcblk0p2 rw earlycon console=ttyS2,115200 ignore_loglevel rootwait";
 #endif
 	};
 
@@ -266,11 +265,11 @@
 	pinctrl-0 = <&uart0_pb &uart0_pb_flow>;
 	uart-has-rtscts;
 
-    bluetooth {
-        compatible = "aic,aic-bt";
-        max-speed = <1500000>;
+	bluetooth {
+		compatible = "aic,aic-bt";
+		max-speed = <1500000>;
 		uart-has-rtscts;
-    };
+	};
 };
 
 &uart1 {
@@ -332,6 +331,10 @@
 	cap-sd-highspeed;
 	vmmc-supply = <&reg_vcc_wifi>;
 	mmc-pwrseq = <&wifi_pwrseq>;
+
+	c2a,btmode_pin = <89>;
+	c2a,iopad_tune;
+	c2a,iopad_delay1 = <0x80>;
 };
 
 &sfc {
@@ -342,7 +345,7 @@
 	#size-cells = <0>;
 
 	status = "okay";
-	
+
 	nand@0 {
 		// compatible = "spi-nand";
 		compatible = "jedec,spi-nor";
@@ -380,7 +383,7 @@
 				label = "userdata";
 				reg = <0x00f20000 0x000E0000>; /* 896KB */
 			};
-			
+
 			/*kernel@100000 {
 				label = "kernel";
 				reg = <0x00100000 0x00400000>;
@@ -409,7 +412,7 @@
 			userdata@2a00000 {
 				label = "userdata";
 				reg = <0x02A00000 0x05300000>;
-			};*/		
+			};*/
 		};
 	};
 };

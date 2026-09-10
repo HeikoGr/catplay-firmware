@@ -1,4 +1,6 @@
 Subject: [PATCH] phy-ingenic-usb: switch forced roles only with IDDIG override
+Upstream-Status: Pending
+
 
 Vendor firmware keeps USBPCR stable while switching between device and host
 roles, and only changes USBRDT.IDDIG_REG with USBRDT.IDDIG_EN asserted. Mirror

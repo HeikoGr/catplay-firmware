@@ -10,7 +10,7 @@ SRC_URI += "file://rtl8822b_config.bin \
             file://rtl8822cs_config.bin \
 "
 
-S = "${WORKDIR}"
+S = "${UNPACKDIR}"
 
 inherit allarch
 

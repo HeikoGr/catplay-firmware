@@ -1,5 +1,7 @@
 Date: Tue, 18 Aug 2026 06:25:00 +0200
 Subject: [PATCH 36/36] i2c: jz4780: gate clock around transfers
+Upstream-Status: Pending
+
 
 ---
  drivers/i2c/busses/i2c-jz4780.c | 16 +++++++++++++++-

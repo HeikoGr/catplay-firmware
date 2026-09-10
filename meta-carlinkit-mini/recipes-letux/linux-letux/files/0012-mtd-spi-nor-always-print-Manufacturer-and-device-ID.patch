@@ -1,4 +1,6 @@
 Subject: [PATCH] mtd: spi-nor: always print Manufacturer and device ID
+Upstream-Status: Pending
+
 
 diff --git a/drivers/mtd/spi-nor/core.c b/drivers/mtd/spi-nor/core.c
 index 9d6e85bf2..524309d27 100644

@@ -27,14 +27,17 @@ inherit image-c2aflash
 inherit c2a-x-persist
 
 C2A_WIC_SKIP_BOOTLOADER_BUILD ?= "0"
+C2A_C2AFLASH_NEEDS_INITRAMFS ?= "1"
 
 do_image_wic[depends] += "${PN}:do_image_${C2A_ROOTFS_FSTYPE}"
 do_image_wic[depends] += "wic-tools:do_populate_sysroot"
 do_image_wic[depends] += "${@bb.utils.contains('C2A_WIC_SKIP_BOOTLOADER_BUILD', '1', '', 'virtual/bootloader:do_deploy', d)}"
+do_image_wic[depends] += "${C2A_FITIMAGE_DEPENDENCY}"
 
 do_image_c2aflash[depends] += "${PN}:do_image_${C2A_ROOTFS_FSTYPE}"
 do_image_c2aflash[depends] += "${@bb.utils.contains('C2A_WIC_SKIP_BOOTLOADER_BUILD', '1', '', 'virtual/bootloader:do_deploy', d)}"
 do_image_c2aflash[depends] += "virtual/kernel:do_deploy"
+do_image_c2aflash[depends] += "${@bb.utils.contains('C2A_C2AFLASH_NEEDS_INITRAMFS', '1', '${C2A_INITRAMFS_IMAGE}:do_image_complete', '', d)}"
 
 # Reduce glitching between kernel release and kernel modules on rootfs...
 KERNELRELEASE_STAMP = "${@oe.utils.read_file(d.expand('${STAGING_KERNEL_BUILDDIR}/include/config/kernel.release')).strip() if os.path.exists(d.expand('${STAGING_KERNEL_BUILDDIR}/include/config/kernel.release')) else ''}"

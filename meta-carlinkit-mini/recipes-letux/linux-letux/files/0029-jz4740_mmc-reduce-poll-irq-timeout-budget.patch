@@ -1,4 +1,6 @@
 Subject: [PATCH] jz4740_mmc: reduce poll IRQ timeout budget
+Upstream-Status: Pending
+
 
 Testing shows that `jz4740_mmc_poll_irq` code path is exclusively used for CMD53 when used with SDIO Wi-Fi cards.
 Under heavy traffic, as much as 70% of operations burn all of the timeout budget, the remaining ones burn majority of that budget.

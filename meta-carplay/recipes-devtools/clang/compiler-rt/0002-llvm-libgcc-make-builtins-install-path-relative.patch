@@ -1,0 +1,40 @@
+Date: Sun, 30 Aug 2026 16:00:00 +0200
+Subject: [PATCH] llvm-libgcc: make builtins install path relative
+
+get_compiler_rt_install_dir can return an absolute path when
+COMPILER_RT_INSTALL_PATH is absolute.  llvm-libgcc subsequently prefixes that
+path with LLVM_LIBGCC_INSTALL_LIBRARY_DIR, installing a duplicate library below
+/usr/lib/usr/lib.  It also uses the absolute path as the target of libgcc.a;
+that symlink escapes a recipe sysroot and is therefore broken for dependent
+recipes such as gcc-runtime.
+
+Express an absolute compiler-rt path relative to the directory containing the
+libgcc compatibility symlinks.  This installs the builtins archive once at the
+expected location and keeps libgcc.a valid both in the image and in recipe
+sysroots.
+
+Upstream-Status: Pending
+
+---
+ llvm-libgcc/CMakeLists.txt | 12 ++++++++++--
+ 1 file changed, 10 insertions(+), 2 deletions(-)
+
+diff --git a/llvm-libgcc/CMakeLists.txt b/llvm-libgcc/CMakeLists.txt
+index dc779170529d..ea6628ac42aa 100644
+--- a/llvm-libgcc/CMakeLists.txt
++++ b/llvm-libgcc/CMakeLists.txt
+@@ -131,2 +131,10 @@ get_compiler_rt_install_dir(${COMPILER_RT_DEFAULT_TARGET_ARCH} install_dir_built
+-# Drop a leading "lib/" if present so we don't duplicate lib/lib
+-string(REGEX REPLACE "^lib/" "" install_dir_builtins "${install_dir_builtins}")
++# Keep this relative to the directory where the libgcc compatibility symlinks
++# are installed.  An absolute COMPILER_RT_INSTALL_PATH must not become either
++# lib//usr/lib/... during installation or an absolute symlink target.
++if (IS_ABSOLUTE "${install_dir_builtins}")
++  file(RELATIVE_PATH install_dir_builtins
++    "${CMAKE_INSTALL_PREFIX}/${LLVM_LIBGCC_INSTALL_LIBRARY_DIR}"
++    "${install_dir_builtins}")
++else()
++  string(REGEX REPLACE "^lib/" "" install_dir_builtins "${install_dir_builtins}")
++endif()
+--
+2.51.0

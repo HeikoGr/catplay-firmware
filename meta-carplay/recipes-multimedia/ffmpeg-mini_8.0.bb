@@ -12,9 +12,14 @@ SRC_URI += "file://0003-ingenic-x1600-flags.patch"
 
 PV = "8.0"
 
-S = "${WORKDIR}/ffmpeg-${PV}"
+S = "${UNPACKDIR}/ffmpeg-${PV}"
 
 DEPENDS = "zlib libfdk-aac"
+
+# This recipe intentionally exports only static archives for Rust LTO.  The
+# distro-wide no-static-libs include appends ${DISABLE_STATIC} to autotools
+# recipes, which would otherwise override FFMPEG_CONF's --enable-static.
+DISABLE_STATIC = ""
 
 # Build fails when thumb is enabled: https://bugzilla.yoctoproject.org/show_bug.cgi?id=7717
 ARM_INSTRUCTION_SET:armv4 = "arm"
@@ -113,7 +118,7 @@ EXTRA_OECONF += "${@bb.utils.contains('TUNE_FEATURES', 'mips32r6', '--disable-mi
 EXTRA_OECONF:append:mips = " --extra-libs=-latomic --disable-mips32r5 --disable-mipsdsp --disable-mipsdspr2 \
                              --disable-loongson2 --disable-loongson3 --disable-mmi --disable-msa"
 EXTRA_OECONF:append:riscv32 = " --extra-libs=-latomic --disable-rvv --disable-asm"
-EXTRA_OECONF:append:armv5 = " --extra-libs=-latomic"
+EXTRA_OECONF:append:armv5 = " --extra-libs=-latomic --disable-armv6 --disable-armv6t2"
 EXTRA_OECONF:append:powerpc = " --extra-libs=-latomic"
 EXTRA_OECONF:append:armv7a = "${@bb.utils.contains('TUNE_FEATURES','neon','',' --disable-neon',d)}"
 EXTRA_OECONF:append:armv7ve = "${@bb.utils.contains('TUNE_FEATURES','neon','',' --disable-neon',d)}"

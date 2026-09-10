@@ -1,3 +1,5 @@
+Upstream-Status: Inappropriate [product-specific driver behavior]
+
 diff --git a/aic8800_bsp/aic_bsp_driver.c b/aic8800_bsp/aic_bsp_driver.c
 index f723a22..1ca2a00 100644
 --- a/aic8800_bsp/aic_bsp_driver.c

@@ -1,5 +1,7 @@
 Date: Tue, 18 Aug 2026 06:25:00 +0200
 Subject: [PATCH 35/36] hwrng: ingenic: gate DTRNG clock around requests
+Upstream-Status: Pending
+
 
 Keep CFG_GEN_EN managed by the hwrng init and cleanup lifecycle, with
 a posted-write readback before gating the clock. Enable the functional

@@ -1,4 +1,6 @@
 Subject: [PATCH] usb: hub: skip OTG root-hub debounce during B-host activation
+Upstream-Status: Pending
+
 
 ---
  drivers/usb/core/hub.c | 14 +++++++++++++-

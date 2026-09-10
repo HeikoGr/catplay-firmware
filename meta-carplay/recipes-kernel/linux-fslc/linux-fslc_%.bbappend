@@ -31,6 +31,12 @@ do_kernel_metadata:prepend() {
     bbwarn "Using defconfig: ${KBUILD_DEFCONFIG}"
 }
 
+# The kernel source package includes generated arch headers. mach-types.h
+# retains the kernel build directory even though the runnable kernel and its
+# modules are built with the normal prefix maps. Keep the exception limited to
+# the optional source package rather than suppressing buildpaths for the recipe.
+INSANE_SKIP:${PN}-src += "buildpaths"
+
 # Fix virtual/kernel
 COMPATIBLE_MACHINE:append = "|qemuarm"
 

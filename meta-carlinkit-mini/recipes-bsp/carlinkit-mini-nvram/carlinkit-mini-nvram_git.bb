@@ -6,7 +6,7 @@ SRC_URI += " \
     file://aic_rf_calib.bin \
 "
 
-S = "${WORKDIR}"
+S = "${UNPACKDIR}"
 
 inherit allarch
 

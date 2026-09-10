@@ -1,6 +1,6 @@
 # Copy the module to sysroot for firmware bundling purposes
 # without depending on runtime-generated kernel-module-xxx split-type pkg
-DRIVER_DIR ?= "drivers/extra/"
+DRIVER_DIR ?= "drivers/extra"
 
 do_install() {
     for file in $(ls ${S} | grep "\.ko"); do

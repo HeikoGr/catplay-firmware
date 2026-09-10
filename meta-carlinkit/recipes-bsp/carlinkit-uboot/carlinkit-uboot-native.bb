@@ -6,7 +6,7 @@ SRC_URI += "file://u-boot-signed.csf"
 SRC_URI += "file://u-boot-signed.imx"
 SRC_URI += "file://u-boot-signed.imx.nohdr"
 
-S = "${WORKDIR}"
+S = "${UNPACKDIR}"
 PV = "1.0"
 
 inherit native

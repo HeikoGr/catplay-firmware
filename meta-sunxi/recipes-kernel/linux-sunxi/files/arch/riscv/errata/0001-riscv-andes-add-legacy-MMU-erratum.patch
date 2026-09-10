@@ -1,0 +1,201 @@
+Date: Sun, 23 Aug 2026 01:40:27 +0200
+Subject: [PATCH] riscv: andes: add legacy MMU erratum
+
+Andes 2X-series legacy page-table walkers do not observe PTEs that
+remain only in the local L1D cache. On these cores SFENCE.VMA also
+writes back L1D data, so execute it on the same hart immediately after
+PTE and PMD stores.
+
+Detect affected cores through the Andes marchid family field and patch
+the workaround through the existing CONFIG_ERRATA_ANDES alternatives
+machinery.
+Upstream-Status: Pending
+---
+ arch/riscv/errata/andes/errata.c             | 59 +++++++++++++++++++-
+ arch/riscv/include/asm/errata_list.h         |  6 ++
+ arch/riscv/include/asm/errata_list_vendors.h |  5 +-
+ arch/riscv/include/asm/pgalloc.h             |  5 +++++
+ arch/riscv/include/asm/pgtable.h             | 10 ++++
+5 files changed, 82 insertions(+), 3 deletions(-)
+
+diff --git a/arch/riscv/errata/andes/errata.c b/arch/riscv/errata/andes/errata.c
+index dcc9d1ee5ffd..4037c6fe502e 100644
+--- a/arch/riscv/errata/andes/errata.c
++++ b/arch/riscv/errata/andes/errata.c
+@@ -9,6 +9,7 @@
+ 
+ #include <linux/memory.h>
+ #include <linux/module.h>
++#include <linux/printk.h>
+ 
+ #include <asm/alternative.h>
+ #include <asm/cacheflush.h>
+@@ -62,14 +63,70 @@ static void errata_probe_iocp(unsigned int stage, unsigned long arch_id, unsigne
+ 	riscv_noncoherent_supported();
+ }
+ 
++/*
++ * Andes 2X-series CPUs use a Legacy MMU which does not observe PTEs
++ * residing only in the local L1D cache. On these cores SFENCE.VMA also
++ * writes back L1D data to the next cache level or memory.
++ *
++ * A newly written PTE therefore has to be followed by SFENCE.VMA on
++ * the same hart before the page-table walker can safely consume it.
++ */
++static bool errata_legacy_mmu_check_func(unsigned long arch_id,
++					 unsigned long impid)
++{
++	(void)impid;
++
++	if (((arch_id & 0xf0) >> 4) != 0x2)
++		return false;
++
++	pr_info_once("riscv: Andes 2X legacy MMU erratum enabled\n");
++
++	return true;
++}
++
++static u32 andes_errata_probe(unsigned long archid, unsigned long impid)
++{
++	u32 cpu_req_errata = 0;
++
++	if (errata_legacy_mmu_check_func(archid, impid))
++		cpu_req_errata |= BIT(ERRATA_ANDES_LEGACY_MMU);
++
++	return cpu_req_errata;
++}
++
+ void __init_or_module andes_errata_patch_func(struct alt_entry *begin, struct alt_entry *end,
+ 					      unsigned long archid, unsigned long impid,
+ 					      unsigned int stage)
+ {
++	struct alt_entry *alt;
++	u32 cpu_req_errata;
++
+ 	BUILD_BUG_ON(ERRATA_ANDES_NUMBER >= RISCV_VENDOR_EXT_ALTERNATIVES_BASE);
+ 
+ 	if (stage == RISCV_ALTERNATIVES_BOOT)
+ 		errata_probe_iocp(stage, archid, impid);
+ 
+-	/* we have nothing to patch here ATM so just return back */
++	if (stage == RISCV_ALTERNATIVES_EARLY_BOOT)
++		return;
++
++	cpu_req_errata = andes_errata_probe(archid, impid);
++
++	for (alt = begin; alt < end; alt++) {
++		u32 mask;
++
++		if (alt->vendor_id != ANDES_VENDOR_ID)
++			continue;
++
++		if (alt->patch_id >= ERRATA_ANDES_NUMBER)
++			continue;
++
++		mask = BIT(alt->patch_id);
++		if (!(cpu_req_errata & mask))
++			continue;
++
++		mutex_lock(&text_mutex);
++		patch_text_nosync(ALT_OLD_PTR(alt), ALT_ALT_PTR(alt),
++				  alt->alt_len);
++		mutex_unlock(&text_mutex);
++	}
+ }
+diff --git a/arch/riscv/include/asm/errata_list.h b/arch/riscv/include/asm/errata_list.h
+index 6694b5ccdcf8..3c90e21b08ad 100644
+--- a/arch/riscv/include/asm/errata_list.h
++++ b/arch/riscv/include/asm/errata_list.h
+@@ -27,6 +27,12 @@ ALTERNATIVE(__stringify(RISCV_PTR do_page_fault),			\
+ 	    CONFIG_ERRATA_SIFIVE_CIP_453)
+ #else /* !__ASSEMBLER__ */
+ 
++#define ALT_ANDES_LEGACY_MMU_FLUSH_TLB()				\
++asm volatile(ALTERNATIVE("nop", "sfence.vma",			\
++		ANDES_VENDOR_ID, ERRATA_ANDES_LEGACY_MMU,	\
++		CONFIG_ERRATA_ANDES)				\
++		: : : "memory")
++
+ #define ALT_SFENCE_VMA_ASID(asid)					\
+ asm(ALTERNATIVE("sfence.vma x0, %0", "sfence.vma", SIFIVE_VENDOR_ID,	\
+ 		ERRATA_SIFIVE_CIP_1200, CONFIG_ERRATA_SIFIVE_CIP_1200)	\
+diff --git a/arch/riscv/include/asm/errata_list_vendors.h b/arch/riscv/include/asm/errata_list_vendors.h
+index ec7eba373437..3fe5729f2e75 100644
+--- a/arch/riscv/include/asm/errata_list_vendors.h
++++ b/arch/riscv/include/asm/errata_list_vendors.h
+@@ -4,8 +4,9 @@
+ #define ASM_ERRATA_LIST_VENDORS_H
+ 
+ #ifdef CONFIG_ERRATA_ANDES
+-#define	ERRATA_ANDES_NO_IOCP 0
+-#define	ERRATA_ANDES_NUMBER 1
++#define	ERRATA_ANDES_NO_IOCP		0
++#define	ERRATA_ANDES_LEGACY_MMU		1
++#define	ERRATA_ANDES_NUMBER		2
+ #endif
+ 
+ #ifdef CONFIG_ERRATA_SIFIVE
+diff --git a/arch/riscv/include/asm/pgalloc.h b/arch/riscv/include/asm/pgalloc.h
+index 5c675c8f9..e8b1c63b1 100644
+--- a/arch/riscv/include/asm/pgalloc.h
++++ b/arch/riscv/include/asm/pgalloc.h
+@@ -8,5 +8,7 @@
+ #define _ASM_RISCV_PGALLOC_H
+ 
+ #include <linux/mm.h>
++#include <linux/preempt.h>
++#include <asm/errata_list.h>
+ #include <asm/sbi.h>
+ #include <asm/tlb.h>
+@@ -111,7 +135,10 @@ static inline pgd_t *pgd_alloc(struct mm_struct *mm)
+ 	pgd = __pgd_alloc(mm, 0);
+ 	if (likely(pgd != NULL)) {
+ 		/* Copy kernel mappings */
++		preempt_disable();
+ 		sync_kernel_mappings(pgd);
++		ALT_ANDES_LEGACY_MMU_FLUSH_TLB();
++		preempt_enable();
+ 	}
+ 	return pgd;
+ }
+
+diff --git a/arch/riscv/include/asm/pgtable.h b/arch/riscv/include/asm/pgtable.h
+index 5d5756bda82e..1a2d53508a48 100644
+--- a/arch/riscv/include/asm/pgtable.h
++++ b/arch/riscv/include/asm/pgtable.h
+@@ -7,6 +7,10 @@
+ #define _ASM_RISCV_PGTABLE_H
+ 
+ #include <linux/mmzone.h>
++#ifndef __ASSEMBLY__
++#include <linux/preempt.h>
++#include <asm/errata_list.h>
++#endif
+ #include <linux/sizes.h>
+ 
+ #include <asm/pgtable-bits.h>
+@@ -239,7 +243,10 @@ static inline bool pmd_leaf(pmd_t pmd)
+ 
+ static inline void set_pmd(pmd_t *pmdp, pmd_t pmd)
+ {
++	preempt_disable();
+ 	WRITE_ONCE(*pmdp, pmd);
++	ALT_ANDES_LEGACY_MMU_FLUSH_TLB();
++	preempt_enable();
+ }
+ 
+ static inline void pmd_clear(pmd_t *pmdp)
+@@ -615,7 +621,10 @@ static inline void set_pte(pte_t *ptep, pte_t pteval)
+  */
+ static inline void set_pte(pte_t *ptep, pte_t pteval)
+ {
++	preempt_disable();
+ 	WRITE_ONCE(*ptep, pteval);
++	ALT_ANDES_LEGACY_MMU_FLUSH_TLB();
++	preempt_enable();
+ }
+ 
+ void flush_icache_pte(struct mm_struct *mm, pte_t pte);
+ #define __HAVE_ARCH_PTEP_CLEAR_YOUNG_FLUSH
+--
+2.55.0

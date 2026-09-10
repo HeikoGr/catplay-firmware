@@ -1,4 +1,6 @@
 Subject: [PATCH] mips: compressed: reduce appended DTB padding
+Upstream-Status: Inappropriate [hardware-specific image size optimization]
+
 
 The AX1800M appended DTB is much smaller than 1 MiB, so reserve 32 KiB
 instead.

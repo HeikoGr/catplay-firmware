@@ -1,4 +1,6 @@
 Subject: [PATCH] mips: ingenic: add X1600 AX1800M DTB target
+Upstream-Status: Inappropriate [hardware-specific C2A integration]
+
 
 Add a dedicated board selection for the Carlinkit Mini Ultra AX1800M
 instead of reusing the Letux LX16 board and filtering its DTB out later.

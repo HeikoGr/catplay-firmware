@@ -1,4 +1,6 @@
 Subject: [PATCH] dwc2: drop dwc2_hcd_start 50ms delay
+Upstream-Status: Pending
+
 
 ---
  drivers/usb/dwc2/hcd.c | 2 +-

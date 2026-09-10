@@ -13,16 +13,18 @@ Also map UDC index 0 to index 1 for C2A before probing the gadget device.
 This keeps commands such as "fastboot 0" on the second controller instead
 of instantiating the USB-A-side UDC first.
 
+Upstream-Status: Inappropriate [C2A board-specific USB routing]
+
 ---
  drivers/usb/gadget/udc/udc-core.c   | 22 ++++++++++++++++++++++
  drivers/usb/gadget/udc/udc-uclass.c | 10 ++++++++++
  2 files changed, 32 insertions(+)
 
 diff --git a/drivers/usb/gadget/udc/udc-core.c b/drivers/usb/gadget/udc/udc-core.c
-index ba658d9229..05cd748795 100644
+index 6bb419ae..840cec62 100644
 --- a/drivers/usb/gadget/udc/udc-core.c
 +++ b/drivers/usb/gadget/udc/udc-core.c
-@@ -320,6 +320,25 @@ err1:
+@@ -319,6 +319,25 @@ err1:
  	return ret;
  }
  
@@ -48,7 +50,7 @@ index ba658d9229..05cd748795 100644
  int usb_gadget_probe_driver(struct usb_gadget_driver *driver)
  {
  	struct usb_udc		*udc = NULL;
-@@ -333,6 +352,9 @@ int usb_gadget_probe_driver(struct usb_gadget_driver *driver)
+@@ -332,6 +351,9 @@ int usb_gadget_probe_driver(struct usb_gadget_driver *driver)
  	list_for_each_entry(udc, &udc_list, list) {
  		udc_count++;
  
@@ -59,13 +61,13 @@ index ba658d9229..05cd748795 100644
  		if (!udc->driver)
  			goto found;
 diff --git a/drivers/usb/gadget/udc/udc-uclass.c b/drivers/usb/gadget/udc/udc-uclass.c
-index 8767353712..c1f8efde6c 100644
+index 723d1cdf..5a6ff0ba 100644
 --- a/drivers/usb/gadget/udc/udc-uclass.c
 +++ b/drivers/usb/gadget/udc/udc-uclass.c
-@@ -13,11 +13,21 @@
- #include <linux/usb/gadget.h>
+@@ -31,11 +31,21 @@ int dm_usb_gadget_handle_interrupts(struct udevice *dev)
+ 	return ops->handle_interrupts(dev);
+ }
  
- #if CONFIG_IS_ENABLED(DM_USB_GADGET)
 +static int c2a_udc_index(int index)
 +{
 +	if (IS_ENABLED(CONFIG_TARGET_MX6UL_C2A) && index == 0)

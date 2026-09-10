@@ -1,5 +1,7 @@
 Date: Sun, 9 Aug 2026 12:00:00 +0200
 Subject: [PATCH] clk: ingenic: x1600: couple CPU and L2 dividers
+Upstream-Status: Pending
+
 
 The X1600 cannot run the L2 cache faster than the CPU.  The generic CPU
 clock divider leaves the L2 divider unchanged, which hangs the system when

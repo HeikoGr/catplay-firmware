@@ -11,6 +11,7 @@ const READAHEAD_PATHS_MAX: usize = 24;
 pub enum BootPlatform {
     Imx,
     Ingenic,
+    V821,
 }
 
 #[derive(PartialEq, Eq, Debug)]
@@ -177,14 +178,80 @@ impl BootPlatform {
         }
     }
 
+    pub fn boot_params_v821() -> Boot<'static> {
+        let mut readahead = Vec::new();
+        for m in ["aic8800_bsp", "aic8800_fdrv"] {
+            if let Err(err) = ModprobeUtil::for_each_dependency_module_path(m, |path| {
+                push_readahead_path(&mut readahead, path).map_err(|_| ModprobeError::PushStrFailed)
+            }) {
+                dmesg!("[boot] Failed to add {m} module paths to readahead: {err:?}");
+            }
+        }
+
+        for path in [
+            "/lib/firmware/aic8800_fw/SDIO/aic8800D80/fw_patch_table_8800d80_u02.bin",
+            "/lib/firmware/aic8800_fw/SDIO/aic8800D80/fw_adid_8800d80_u02.bin",
+            "/lib/firmware/aic8800_fw/SDIO/aic8800D80/fw_patch_8800d80_u02.bin",
+            "/lib/firmware/aic8800_fw/SDIO/aic8800D80/fw_patch_8800d80_u02_ext0.bin",
+            "/lib/firmware/aic8800_fw/SDIO/aic8800D80/fmacfw_8800d80_h_u02.bin",
+            "/usr/bin/catplay_c2a",
+            "/bin/busybox",
+            "/usr/libexec/bluetooth/bluetoothd",
+            // "/usr/sbin/wpa_supplicant",
+            // "/usr/sbin/wpa_cli",
+            "/usr/sbin/hostapd",
+        ] {
+            if let Err(err) = push_readahead_path(&mut readahead, path) {
+                dmesg!("[boot] Failed to add {path} to readahead: {err}");
+            }
+        }
+
+        Boot {
+            target: read_boot_target_from_cmdline(),
+            main_udc: "musb-hdrc.1.auto",
+            extra_udc: None,
+            persist_mtd: "/dev/mtdblock3",
+            persist_fs: "jffs2",
+            readahead,
+            mfi_bus: "1",
+            mfi_dev_addr: "0x11",
+            sysctls: &[
+                ("net.core.netdev_max_backlog", "512"),
+                ("net.ipv4.tcp_moderate_rcvbuf", "1"),
+                ("net.ipv4.tcp_low_latency", "1"),
+                ("net.ipv4.tcp_max_orphans", "256"),
+                ("net.ipv4.tcp_tw_reuse", "1"),
+                ("vm.watermark_boost_factor", "0"),
+                ("vm.watermark_scale_factor", "10"),
+                ("vm.min_free_kbytes", "2048"),
+                ("vm.swappiness", "10"),
+                ("vm.vfs_cache_pressure", "500"),
+                ("vm.page-cluster", "0"),
+
+                ("vm.dirty_expire_centisecs", "100"),
+                ("vm.dirty_writeback_centisecs", "100")
+            ],
+            platform: BootPlatform::V821,
+
+            p2p_allow: false,
+            p2p_whitelist: &[Radio::AIC8800D80],
+            p2p_catplay: false,
+            p2p_without_hostapd: true,
+        }
+    }
+
     pub fn params(&self) -> Boot<'static> {
         match self {
             BootPlatform::Imx => Self::boot_params_imx(),
             BootPlatform::Ingenic => Self::boot_params_ultra(),
+            BootPlatform::V821 => Self::boot_params_v821()
         }
     }
 
     pub fn detect() -> Self {
+        #[cfg(target_arch = "riscv32")]
+        return BootPlatform::V821;
+
         match Flash::is_ultra() {
             true => BootPlatform::Ingenic,
             false => BootPlatform::Imx,

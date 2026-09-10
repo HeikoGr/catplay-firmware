@@ -9,8 +9,6 @@ LIC_FILES_CHKSUM = "file://NOTICE;md5=5985e1e12f4afa710d64ed7bfd291875"
 SRC_URI = "git://github.com/mstorsjo/fdk-aac.git;protocol=https;branch=master"
 SRCREV = "716f4394641d53f0d79c9ddac3fa93b03a49f278"
 
-S = "${WORKDIR}/git"
-
 PV = "2.0.3"
 PR = "r3"
 

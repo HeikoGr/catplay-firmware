@@ -1,4 +1,6 @@
 Subject: [PATCH] x1600: add missing HWRNG clock definition and driver support
+Upstream-Status: Pending
+
 
 diff --git a/arch/mips/boot/dts/ingenic/x1600.dtsi b/arch/mips/boot/dts/ingenic/x1600.dtsi
 index bd4bd7992..a6b6fe7c0 100644

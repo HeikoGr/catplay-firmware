@@ -1,0 +1,20 @@
+Subject: build: make OpenSBI optimization configurable
+
+Expose OPENSBI_OPTIMIZE so the recipe can select size or speed tuning.
+
+Upstream-Status: Pending
+---
+diff --git a/Makefile b/Makefile
+index 8683eca..2b9ec79 100644
+--- a/Makefile
++++ b/Makefile
+@@ -2,7 +2,8 @@ ifneq ($(DEBUG),)
+ CFLAGS		+=	-O0
+ CPPFLAGS	+=	-DOPENSBI_DEBUG
+ else
+-CFLAGS		+=	-O2
++OPENSBI_OPTIMIZE ?= -O2
++CFLAGS		+=	$(OPENSBI_OPTIMIZE)
+ endif
+ 
+ ifeq ($(UBSAN),y)

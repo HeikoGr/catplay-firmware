@@ -18,5 +18,7 @@ SRC_URI:append:clk-mini-ultra-nor-recov = " \
 COMPATIBLE_MACHINE:append = "|clk-mini-ultra-nor|clk-mini-ultra-recov"
 
 do_patch:append:clk-mini-ultra() {
-    cp -f ${WORKDIR}/arch/mips/boot/dts/ingenic/*.dts ${S}/arch/mips/boot/dts/ingenic/ || true
+    install -m 0644 \
+        ${UNPACKDIR}/arch/mips/boot/dts/ingenic/carlinkit-mini-ultra-nor.dts \
+        ${S}/arch/mips/boot/dts/ingenic/carlinkit-mini-ultra-nor.dts
 }

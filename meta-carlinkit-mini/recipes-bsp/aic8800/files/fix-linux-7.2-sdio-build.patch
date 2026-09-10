@@ -1,3 +1,5 @@
+Upstream-Status: Pending
+
 --- a/aic8800_btlpm/rfkill.c
 +++ b/aic8800_btlpm/rfkill.c
 @@ -18,8 +18,10 @@

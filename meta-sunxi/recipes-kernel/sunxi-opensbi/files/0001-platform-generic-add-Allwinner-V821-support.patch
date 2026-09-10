@@ -1,0 +1,369 @@
+Upstream-Status: Pending
+
+diff --git a/platform/generic/Kconfig b/platform/generic/Kconfig
+index c8f01d4..a056c84 100644
+--- a/platform/generic/Kconfig
++++ b/platform/generic/Kconfig
+@@ -4,6 +4,13 @@ config PLATFORM_ALLWINNER_D1
+ 	select THEAD_C9XX_PMU
+ 	default n
+ 
++config PLATFORM_ALLWINNER_V821
++	bool "Allwinner V821 support"
++	depends on FDT_IRQCHIP_PLIC
++	select IPI_PLICSW
++	select TIMER_PLMT
++	default n
++
+ config PLATFORM_ANDES_AE350
+ 	bool "Andes AE350 support"
+ 	select ANDES_PMU
+diff --git a/platform/generic/allwinner/objects.mk b/platform/generic/allwinner/objects.mk
+index 447cdf1..7503109 100644
+--- a/platform/generic/allwinner/objects.mk
++++ b/platform/generic/allwinner/objects.mk
+@@ -4,3 +4,6 @@
+ 
+ carray-platform_override_modules-$(CONFIG_PLATFORM_ALLWINNER_D1) += sun20i_d1
+ platform-objs-$(CONFIG_PLATFORM_ALLWINNER_D1) += allwinner/sun20i-d1.o
++
++carray-platform_override_modules-$(CONFIG_PLATFORM_ALLWINNER_V821) += sun300i_v821
++platform-objs-$(CONFIG_PLATFORM_ALLWINNER_V821) += allwinner/sun300i-v821.o
+diff --git a/platform/generic/allwinner/sun300i-v821.c b/platform/generic/allwinner/sun300i-v821.c
+new file mode 100644
+--- /dev/null
++++ b/platform/generic/allwinner/sun300i-v821.c
+@@ -0,0 +1,294 @@
++// SPDX-License-Identifier: BSD-2-Clause
++/*
++ * Copyright (c) 2026 CatPlay project
++ *
++ * Allwinner V821 platform support.
++ */
++
++#include <andes/andes.h>
++#include <andes/andes_pma.h>
++#include <libfdt.h>
++#include <platform_override.h>
++#include <sbi/riscv_asm.h>
++#include <sbi/riscv_io.h>
++#include <sbi/sbi_console.h>
++#include <sbi/sbi_ecall_interface.h>
++#include <sbi/sbi_hart.h>
++#include <sbi/sbi_system.h>
++#include <sbi_utils/fdt/fdt_helper.h>
++#include <sbi_utils/ipi/andes_plicsw.h>
++#include <sbi_utils/timer/andes_plmt.h>
++
++#define SUN300I_V821_PLMT_BASE                  0x48400000UL
++#define SUN300I_V821_PLMT_SIZE                  0x1000UL
++#define SUN300I_V821_TIMEBASE_FREQ              40000000UL
++
++#define SUN300I_V821_PLICSW_BASE                0x48800000UL
++#define SUN300I_V821_PLICSW_SIZE                0x400000UL
++
++#define SUN300I_V821_PRCM_BASE                  ((void *)0x4a000000UL)
++#define SUN300I_V821_WDT_CLK_REG                0x1c
++#define SUN300I_V821_WDT_CLK_GATE               BIT(3)
++
++#define SUN300I_V821_WDT_BASE                   ((void *)0x4a001000UL)
++#define SUN300I_V821_WDT_KEY                    0x16aa0000
++#define SUN300I_V821_WDT_SOFT_RST_REG           0x08
++#define SUN300I_V821_WDT_MODE_REG               0x18
++
++#define SUN300I_V821_DRAM_BASE                  0x80000000UL
++#define SUN300I_V821_DRAM_SIZE                  0x04000000UL
++#define SUN300I_V821_DMA_COHERENT_SIZE          0x00040000UL
++#define SUN300I_V821_DMA_COHERENT_BASE          \
++        (SUN300I_V821_DRAM_BASE + SUN300I_V821_DRAM_SIZE - \
++         SUN300I_V821_DMA_COHERENT_SIZE)
++
++#define SUN300I_V821_PMA_FLAGS                  \
++        (ANDES_PMACFG_ETYP_NAPOT |              \
++         ANDES_PMACFG_MTYP_MEM_NON_CACHE_BUF)
++
++#define SUN300I_V821_PMACFG_ENTRIES_PER_CSR     4
++#define SUN300I_V821_PMACFG_ENTRY_BITS          8
++#define SUN300I_V821_PMACFG_ENTRY_MASK          0xffUL
++
++#define SUN300I_V821_DMA_COHERENT_ENTRY         0
++
++extern struct plmt_data plmt;
++extern struct plicsw_data plicsw;
++
++static int sun300i_v821_pma_status = -1;
++
++static unsigned int sun300i_v821_pmacfg_csr(unsigned int entry)
++{
++        return CSR_PMACFG0 + entry / SUN300I_V821_PMACFG_ENTRIES_PER_CSR;
++}
++
++static unsigned int sun300i_v821_pmacfg_shift(unsigned int entry)
++{
++        return (entry % SUN300I_V821_PMACFG_ENTRIES_PER_CSR) *
++               SUN300I_V821_PMACFG_ENTRY_BITS;
++}
++
++static unsigned long sun300i_v821_pmaaddr_dma_coherent(void)
++{
++        return (SUN300I_V821_DMA_COHERENT_BASE >> 2) +
++               (SUN300I_V821_DMA_COHERENT_SIZE >> 3) - 1;
++}
++
++static void sun300i_v821_pma_set_cfg(unsigned int entry, u8 cfg)
++{
++        unsigned int csr = sun300i_v821_pmacfg_csr(entry);
++        unsigned int shift = sun300i_v821_pmacfg_shift(entry);
++        unsigned long value = csr_read_num(csr);
++
++        value &= ~(SUN300I_V821_PMACFG_ENTRY_MASK << shift);
++        value |= (unsigned long)cfg << shift;
++        csr_write_num(csr, value);
++}
++
++static int sun300i_v821_pma_setup_dma_coherent(void)
++{
++        if (!(csr_read_num(CSR_MMSC_CFG) & MMSC_CFG_PPMA_MASK))
++                return -1;
++
++        sun300i_v821_pma_set_cfg(SUN300I_V821_DMA_COHERENT_ENTRY,
++                                 SUN300I_V821_PMA_FLAGS);
++        csr_write_num(CSR_PMAADDR0 + SUN300I_V821_DMA_COHERENT_ENTRY,
++                      sun300i_v821_pmaaddr_dma_coherent());
++
++        return 0;
++}
++
++static int sun300i_v821_fdt_add_dma_coherent_node(void *fdt, int parent,
++                                                u64 addr)
++{
++        char name[sizeof("dma_coherent@") + 16];
++
++        sbi_snprintf(name, sizeof(name), "dma_coherent@%llx",
++                     (unsigned long long)addr);
++        return fdt_add_subnode(fdt, parent, name);
++}
++
++static int sun300i_v821_fdt_add_dma_coherent(void *fdt)
++{
++        fdt32_t reg[4];
++        fdt32_t *val = reg;
++        u64 addr = SUN300I_V821_DMA_COHERENT_BASE;
++        u64 size = SUN300I_V821_DMA_COHERENT_SIZE;
++        int parent, node, na, ns, rc;
++
++        rc = fdt_open_into(fdt, fdt, fdt_totalsize(fdt) + 512);
++        if (rc < 0)
++                return rc;
++
++        na = fdt_address_cells(fdt, 0);
++        ns = fdt_size_cells(fdt, 0);
++        if (na < 1 || na > 2 || ns < 1 || ns > 2)
++                return -FDT_ERR_BADNCELLS;
++
++        parent = fdt_path_offset(fdt, "/reserved-memory");
++        if (parent < 0) {
++                parent = fdt_add_subnode(fdt, 0, "reserved-memory");
++                if (parent < 0)
++                        return parent;
++
++                rc = fdt_setprop_u32(fdt, parent, "#address-cells", na);
++                if (rc < 0)
++                        return rc;
++
++                rc = fdt_setprop_u32(fdt, parent, "#size-cells", ns);
++                if (rc < 0)
++                        return rc;
++
++                rc = fdt_setprop_empty(fdt, parent, "ranges");
++                if (rc < 0)
++                        return rc;
++        }
++
++        node = sun300i_v821_fdt_add_dma_coherent_node(fdt, parent, addr);
++        if (node < 0)
++                return node;
++
++        if (na > 1)
++                *val++ = cpu_to_fdt32(addr >> 32);
++        *val++ = cpu_to_fdt32(addr);
++
++        if (ns > 1)
++                *val++ = cpu_to_fdt32(size >> 32);
++        *val++ = cpu_to_fdt32(size);
++
++        rc = fdt_setprop(fdt, node, "reg", reg,
++                         (na + ns) * sizeof(fdt32_t));
++        if (rc < 0)
++                goto err_delete;
++
++        rc = fdt_setprop_string(fdt, node, "compatible",
++                                "shared-dma-pool");
++        if (rc < 0)
++                goto err_delete;
++
++        rc = fdt_setprop_empty(fdt, node, "no-map");
++        if (rc < 0)
++                goto err_delete;
++
++        rc = fdt_setprop_empty(fdt, node, "linux,dma-default");
++        if (rc < 0)
++                goto err_delete;
++
++        return 0;
++
++err_delete:
++        fdt_del_node(fdt, node);
++        return rc;
++}
++
++static int sun300i_v821_system_reset_check(u32 type, u32 reason)
++{
++        switch (type) {
++        case SBI_SRST_RESET_TYPE_SHUTDOWN:
++        case SBI_SRST_RESET_TYPE_COLD_REBOOT:
++        case SBI_SRST_RESET_TYPE_WARM_REBOOT:
++                return 1;
++        }
++
++        return 0;
++}
++
++static void sun300i_v821_system_reset(u32 type, u32 reason)
++{
++        u32 value;
++
++        if (type == SBI_SRST_RESET_TYPE_SHUTDOWN)
++                sbi_hart_hang();
++
++        /* Linux may leave the WDT clock gated, so enable it before reset. */
++        value = readl(SUN300I_V821_PRCM_BASE + SUN300I_V821_WDT_CLK_REG);
++        value |= SUN300I_V821_WDT_CLK_GATE;
++        writel(value, SUN300I_V821_PRCM_BASE + SUN300I_V821_WDT_CLK_REG);
++
++        writel(SUN300I_V821_WDT_KEY,
++               SUN300I_V821_WDT_BASE + SUN300I_V821_WDT_MODE_REG);
++        writel(SUN300I_V821_WDT_KEY | BIT(0),
++               SUN300I_V821_WDT_BASE + SUN300I_V821_WDT_SOFT_RST_REG);
++
++        sbi_hart_hang();
++}
++
++static struct sbi_system_reset_device sun300i_v821_reset = {
++        .name = "sun300i-v821-wdt",
++        .system_reset_check = sun300i_v821_system_reset_check,
++        .system_reset = sun300i_v821_system_reset,
++};
++
++static int sun300i_v821_early_init(bool cold_boot)
++{
++        int rc;
++
++        rc = generic_early_init(cold_boot);
++        if (rc || !cold_boot)
++                return rc;
++
++        plicsw.addr = SUN300I_V821_PLICSW_BASE;
++        plicsw.size = SUN300I_V821_PLICSW_SIZE;
++        plicsw.hart_count = 1;
++
++        return plicsw_cold_ipi_init(&plicsw);
++}
++
++static int sun300i_v821_timer_init(void)
++{
++        plmt.hart_count = 1;
++        plmt.size = SUN300I_V821_PLMT_SIZE;
++        plmt.timer_freq = SUN300I_V821_TIMEBASE_FREQ;
++        plmt.time_val = (volatile u64 *)SUN300I_V821_PLMT_BASE;
++        plmt.time_cmp = (volatile u64 *)(SUN300I_V821_PLMT_BASE + 0x8);
++
++        return plmt_cold_timer_init(&plmt);
++}
++
++
++static int sun300i_v821_final_init(bool cold_boot)
++{
++        void *fdt;
++        int rc;
++
++        rc = generic_final_init(cold_boot);
++        if (rc || !cold_boot)
++                return rc;
++
++        sbi_system_reset_add_device(&sun300i_v821_reset);
++
++        /* Publish the coherent DMA region only when PMA is available. */
++        if (sun300i_v821_pma_status)
++                return 0;
++
++        fdt = fdt_get_address_rw();
++        rc = sun300i_v821_fdt_add_dma_coherent(fdt);
++        if (rc < 0)
++                return rc;
++
++        return 0;
++}
++
++static int sun300i_v821_platform_init(const void *fdt, int nodeoff,
++                                      const struct fdt_match *match)
++{
++        sun300i_v821_pma_status = sun300i_v821_pma_setup_dma_coherent();
++
++        generic_platform_ops.early_init = sun300i_v821_early_init;
++        generic_platform_ops.final_init = sun300i_v821_final_init;
++        generic_platform_ops.timer_init = sun300i_v821_timer_init;
++
++        return 0;
++}
++
++static const struct fdt_match sun300i_v821_match[] = {
++        { .compatible = "allwinner,v821b" },
++        { .compatible = "allwinner,v821" },
++        { .compatible = "allwinner,sun300iw1p1" },
++        { },
++};
++
++const struct fdt_driver sun300i_v821 = {
++        .match_table = sun300i_v821_match,
++        .init = sun300i_v821_platform_init,
++};
+diff --git a/platform/generic/configs/v821_defconfig b/platform/generic/configs/v821_defconfig
+new file mode 100644
+index 0000000..09d7075
+--- /dev/null
++++ b/platform/generic/configs/v821_defconfig
+@@ -0,0 +1,11 @@
++CONFIG_PLATFORM_ALLWINNER_V821=y
++CONFIG_FDT_IRQCHIP=y
++CONFIG_FDT_IRQCHIP_PLIC=y
++#CONFIG_FDT_SERIAL=y
++#CONFIG_FDT_SERIAL_UART8250=y
++# CONFIG_SBI_ECALL_SUSP is not set
++# CONFIG_SBI_ECALL_CPPC is not set
++# CONFIG_SBI_ECALL_FWFT is not set
++# CONFIG_SBI_ECALL_DBTR is not set
++# CONFIG_SBI_ECALL_SSE is not set
++# CONFIG_SBI_ECALL_MPXY is not set
+diff --git a/firmware/fw_base.S b/firmware/fw_base.S
+--- a/firmware/fw_base.S
++++ b/firmware/fw_base.S
+@@ -30,16 +30,18 @@
+ 	add	\__d3, \__s3, zero
+ 	add	\__d4, \__s4, zero
+ .endm
+ 
+ .macro CLEAR_MDT tmp
++#ifndef CONFIG_PLATFORM_ALLWINNER_V821
+ #if __riscv_xlen == 32
+ 	li 	\tmp, MSTATUSH_MDT
+ 	csrc	CSR_MSTATUSH, \tmp
+ #else
+ 	li 	\tmp, MSTATUS_MDT
+ 	csrc	CSR_MSTATUS, \tmp
++#endif
+ #endif
+ .endm
+ 
+ 	.section .entry, "ax", %progbits
+ 	.align 3

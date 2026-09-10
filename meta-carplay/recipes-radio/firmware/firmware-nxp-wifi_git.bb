@@ -15,8 +15,6 @@ SRCREV = "eef7ef94bc44cacd3b068f66658ef33391547daa"
 
 inherit allarch
 
-S = "${WORKDIR}/git"
-
 CLEANBROKEN = "1"
 ALLOW_EMPTY:${PN} = "1"
 ALLOW_EMPTY:${PN}-all-sdio = "1"

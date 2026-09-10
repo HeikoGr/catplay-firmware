@@ -1,0 +1,228 @@
+Date: Mon, 17 Aug 2026 12:00:00 +0200
+Subject: [PATCH] usb: host: quiesce platform HCDs before remove
+
+Dynamic platform device removal currently starts with usb_remove_hcd(),
+leaving EHCI and OHCI operational while their USB devices are being
+disconnected.  Active unlinks can consequently wait for controller
+handshakes until they time out if a shared PHY or reset domain disappears
+during the role transition.
+
+Make platform removal stop accepting URBs and invoke the existing HCD
+shutdown callback before usb_remove_hcd().  With the root hub stopped, the
+normal dequeue paths finish outstanding URBs in software with -ESHUTDOWN,
+before platform power, clocks, resets and PHY references are released.
+
+The second part of this change prevents a potential use-after-free when an
+enqueue runs in parallel with shutdown.  Both drivers allocate schedule
+objects before checking HCD_FLAG_HW_ACCESSIBLE.  Without synchronization,
+remove can destroy the TD/qTD DMA pool while the rejected enqueue is still
+freeing its private descriptor list.
+
+Count enqueue calls before their first allocation.  Platform remove first
+closes the admission gate and then waits for calls which entered while the
+HCD was accessible.  Calls entering after the gate is closed return without
+touching the descriptor pools.
+
+Upstream-Status: Pending
+---
+ drivers/usb/host/ehci-hcd.c      | 25 +++++++++++++++++++++----
+ drivers/usb/host/ehci-platform.c |  9 +++++++++
+ drivers/usb/host/ehci.h          |  2 ++
+ drivers/usb/host/ohci-hcd.c      | 25 +++++++++++++++++++++----
+ drivers/usb/host/ohci-mem.c      |  2 ++
+ drivers/usb/host/ohci-platform.c |  9 +++++++++
+ drivers/usb/host/ohci.h          |  2 ++
+ 7 files changed, 70 insertions(+), 8 deletions(-)
+
+diff --git a/drivers/usb/host/ehci-hcd.c b/drivers/usb/host/ehci-hcd.c
+index 3c46bb18c..5831d4ec2 100644
+--- a/drivers/usb/host/ehci-hcd.c
++++ b/drivers/usb/host/ehci-hcd.c
+@@ -460,6 +460,8 @@ static int ehci_init(struct usb_hcd *hcd)
+ 	struct ehci_qh_hw	*hw;
+ 
+ 	spin_lock_init(&ehci->lock);
++	atomic_set(&ehci->enqueues_in_progress, 0);
++	init_waitqueue_head(&ehci->enqueue_wait);
+ 
+ 	/*
+ 	 * keep io watchdog by default, those good HCDs could turn off it later
+@@ -878,11 +880,9 @@ static irqreturn_t ehci_irq (struct usb_hcd *hcd)
+  * NOTE:  control, bulk, and interrupt share the same code to append TDs
+  * to a (possibly active) QH, and the same QH scanning code.
+  */
+-static int ehci_urb_enqueue (
+-	struct usb_hcd	*hcd,
+-	struct urb	*urb,
+-	gfp_t		mem_flags
+-) {
++static int __ehci_urb_enqueue(struct usb_hcd *hcd, struct urb *urb,
++			      gfp_t mem_flags)
++{
+ 	struct ehci_hcd		*ehci = hcd_to_ehci (hcd);
+ 	struct list_head	qtd_list;
+ 
+@@ -915,6 +915,27 @@ static int ehci_urb_enqueue (
+ 	}
+ }
+ 
++static int ehci_urb_enqueue(struct usb_hcd *hcd, struct urb *urb,
++			    gfp_t mem_flags)
++{
++	struct ehci_hcd *ehci = hcd_to_ehci(hcd);
++	int ret;
++
++	atomic_inc(&ehci->enqueues_in_progress);
++	/* Publish admission before checking whether remove closed the gate. */
++	smp_mb__after_atomic();
++
++	if (unlikely(!HCD_HW_ACCESSIBLE(hcd)))
++		ret = -ESHUTDOWN;
++	else
++		ret = __ehci_urb_enqueue(hcd, urb, mem_flags);
++
++	if (atomic_dec_and_test(&ehci->enqueues_in_progress))
++		wake_up(&ehci->enqueue_wait);
++
++	return ret;
++}
++
+ /* remove from hardware lists
+  * completions normally happen asynchronously
+  */
+diff --git a/drivers/usb/host/ehci-platform.c b/drivers/usb/host/ehci-platform.c
+index f61f095ce..81d7a4ac8 100644
+--- a/drivers/usb/host/ehci-platform.c
++++ b/drivers/usb/host/ehci-platform.c
+@@ -414,11 +414,20 @@ static void ehci_platform_remove(struct platform_device *dev)
+ 	struct usb_hcd *hcd = platform_get_drvdata(dev);
+ 	struct usb_ehci_pdata *pdata = dev_get_platdata(&dev->dev);
+ 	struct ehci_platform_priv *priv = hcd_to_ehci_priv(hcd);
++	struct ehci_hcd *ehci = hcd_to_ehci(hcd);
+ 	int clk;
+ 
+ 	if (priv->quirk_poll)
+ 		quirk_poll_end(priv);
+ 
++	clear_bit(HCD_FLAG_HW_ACCESSIBLE, &hcd->flags);
++	/* Close the admission gate before checking active enqueue calls. */
++	smp_mb__after_atomic();
++	wait_event(ehci->enqueue_wait,
++		   !atomic_read(&ehci->enqueues_in_progress));
++	if (hcd->driver->shutdown)
++		hcd->driver->shutdown(hcd);
++
+ 	usb_remove_hcd(hcd);
+ 
+ 	if (pdata->power_off)
+diff --git a/drivers/usb/host/ehci.h b/drivers/usb/host/ehci.h
+index d7a3c8d13..62330b700 100644
+--- a/drivers/usb/host/ehci.h
++++ b/drivers/usb/host/ehci.h
+@@ -127,6 +127,8 @@ struct ehci_hcd {			/* one per controller */
+ 	__u32			hcs_params;	/* cached register copy */
+ 	spinlock_t		lock;
+ 	enum ehci_rh_state	rh_state;
++	atomic_t		enqueues_in_progress;
++	wait_queue_head_t	enqueue_wait;
+ 
+ 	/* general schedule support */
+ 	bool			scanning:1;
+diff --git a/drivers/usb/host/ohci-hcd.c b/drivers/usb/host/ohci-hcd.c
+index 129468b1e..f9ecdd0c4 100644
+--- a/drivers/usb/host/ohci-hcd.c
++++ b/drivers/usb/host/ohci-hcd.c
+@@ -144,11 +144,9 @@ static int number_of_tds(struct urb *urb)
+ /*
+  * queue up an urb for anything except the root hub
+  */
+-static int ohci_urb_enqueue (
+-	struct usb_hcd	*hcd,
+-	struct urb	*urb,
+-	gfp_t		mem_flags
+-) {
++static int __ohci_urb_enqueue(struct usb_hcd *hcd, struct urb *urb,
++			      gfp_t mem_flags)
++{
+ 	struct ohci_hcd	*ohci = hcd_to_ohci (hcd);
+ 	struct ed	*ed;
+ 	urb_priv_t	*urb_priv;
+@@ -304,6 +302,27 @@ static int ohci_urb_enqueue (
+ 	return retval;
+ }
+ 
++static int ohci_urb_enqueue(struct usb_hcd *hcd, struct urb *urb,
++			    gfp_t mem_flags)
++{
++	struct ohci_hcd *ohci = hcd_to_ohci(hcd);
++	int ret;
++
++	atomic_inc(&ohci->enqueues_in_progress);
++	/* Publish admission before checking whether remove closed the gate. */
++	smp_mb__after_atomic();
++
++	if (unlikely(!HCD_HW_ACCESSIBLE(hcd)))
++		ret = -ESHUTDOWN;
++	else
++		ret = __ohci_urb_enqueue(hcd, urb, mem_flags);
++
++	if (atomic_dec_and_test(&ohci->enqueues_in_progress))
++		wake_up(&ohci->enqueue_wait);
++
++	return ret;
++}
++
+ /*
+  * decouple the URB from the HC queues (TDs, urb_priv).
+  * reporting is always done
+diff --git a/drivers/usb/host/ohci-mem.c b/drivers/usb/host/ohci-mem.c
+index 1425335c6..04d4361f1 100644
+--- a/drivers/usb/host/ohci-mem.c
++++ b/drivers/usb/host/ohci-mem.c
+@@ -28,6 +28,8 @@ static void ohci_hcd_init (struct ohci_hcd *ohci)
+ {
+ 	ohci->next_statechange = jiffies;
+ 	spin_lock_init (&ohci->lock);
++	atomic_set(&ohci->enqueues_in_progress, 0);
++	init_waitqueue_head(&ohci->enqueue_wait);
+ 	INIT_LIST_HEAD (&ohci->pending);
+ 	INIT_LIST_HEAD(&ohci->eds_in_use);
+ }
+diff --git a/drivers/usb/host/ohci-platform.c b/drivers/usb/host/ohci-platform.c
+index c801527d5..36b6afb63 100644
+--- a/drivers/usb/host/ohci-platform.c
++++ b/drivers/usb/host/ohci-platform.c
+@@ -242,9 +242,18 @@ static void ohci_platform_remove(struct platform_device *dev)
+ 	struct usb_hcd *hcd = platform_get_drvdata(dev);
+ 	struct usb_ohci_pdata *pdata = dev_get_platdata(&dev->dev);
+ 	struct ohci_platform_priv *priv = hcd_to_ohci_priv(hcd);
++	struct ohci_hcd *ohci = hcd_to_ohci(hcd);
+ 	int clk;
+ 
+ 	pm_runtime_get_sync(&dev->dev);
++	clear_bit(HCD_FLAG_HW_ACCESSIBLE, &hcd->flags);
++	/* Close the admission gate before checking active enqueue calls. */
++	smp_mb__after_atomic();
++	wait_event(ohci->enqueue_wait,
++		   !atomic_read(&ohci->enqueues_in_progress));
++	if (hcd->driver->shutdown)
++		hcd->driver->shutdown(hcd);
++
+ 	usb_remove_hcd(hcd);
+ 
+ 	if (pdata->power_off)
+diff --git a/drivers/usb/host/ohci.h b/drivers/usb/host/ohci.h
+index 631dda617..1cb2a3069 100644
+--- a/drivers/usb/host/ohci.h
++++ b/drivers/usb/host/ohci.h
+@@ -361,6 +361,8 @@ enum ohci_rh_state {
+ 
+ struct ohci_hcd {
+ 	spinlock_t		lock;
++	atomic_t		enqueues_in_progress;
++	wait_queue_head_t	enqueue_wait;
+ 
+ 	/*
+ 	 * I/O memory used to communicate with the HC (dma-consistent)
+-- 
+2.55.0

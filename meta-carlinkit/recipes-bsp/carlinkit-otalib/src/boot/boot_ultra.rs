@@ -40,6 +40,16 @@ impl BootUltra {
                 }
                 v.params()
             }
+            v @ BootPlatform::V821 => {
+                dmesg!("[boot] Platform: V821 beta");
+                if let Some(_fork_guard) = SystemUtil::fork_guard() {
+                    dmesg!("[boot] Modprobing sunxi-mmc");
+                    let _ = ModprobeUtil::modprobe("sunxi-mmc");
+                    dmesg!("[boot] Finished modprobing sunxi-mmc");
+                }
+
+                v.params()
+            }
         };
 
         let target = boot.target;

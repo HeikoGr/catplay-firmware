@@ -183,15 +183,6 @@ index e9139b3..2f6acfa 100644
  		error("Unable set contents for %s: (%s)", filename,
  								gerr->message);
  		g_error_free(gerr);
-@@ -8861,7 +8864,7 @@ static void store_csrk(struct btd_adapter *adapter, const bdaddr_t *peer,
- 	create_file(filename, 0600);
- 
- 	str = g_key_file_to_data(key_file, &length, NULL);
--	if (!g_file_set_contents(filename, str, length, &gerr)) {
-+	if (!btd_file_set_contents(filename, str, length, &gerr)) {
- 		error("Unable set contents for %s: (%s)", filename,
- 								gerr->message);
- 		g_error_free(gerr);
 @@ -8940,7 +8943,7 @@ static void store_irk(struct btd_adapter *adapter, const bdaddr_t *peer,
  	g_key_file_set_string(key_file, "IdentityResolvingKey", "Key", str);
  

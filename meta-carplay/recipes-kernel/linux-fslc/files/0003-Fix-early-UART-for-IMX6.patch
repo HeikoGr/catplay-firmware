@@ -1,6 +1,8 @@
 Date: Wed, 23 Jul 2025 00:15:11 +0200
 Subject: [PATCH] Fix early UART for IMX6
 
+Upstream-Status: Pending
+
 ---
  drivers/tty/serial/imx_earlycon.c | 2 ++
  1 file changed, 2 insertions(+)

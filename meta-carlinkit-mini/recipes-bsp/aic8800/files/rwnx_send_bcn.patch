@@ -1,3 +1,5 @@
+Upstream-Status: Inappropriate [product-specific driver behavior]
+
 diff --git a/aic8800_fdrv/rwnx_msg_tx.c b/aic8800_fdrv/rwnx_msg_tx.c
 index 678fddf..e5f8bcc 100644
 --- a/aic8800_fdrv/rwnx_msg_tx.c

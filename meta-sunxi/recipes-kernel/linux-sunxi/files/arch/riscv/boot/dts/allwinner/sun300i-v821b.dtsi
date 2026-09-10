@@ -1,0 +1,484 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+#include <dt-bindings/interrupt-controller/irq.h>
+#include <dt-bindings/clock/sun300i-v821-r-ccu.h>
+#include <dt-bindings/clock/sun300i-v821-ccu.h>
+#include <dt-bindings/reset/sun300i-v821-r-ccu.h>
+#include <dt-bindings/reset/sun300i-v821-ccu.h>
+
+/ {
+	#address-cells = <2>;
+	#size-cells = <2>;
+	compatible = "allwinner,sun300iw1p1";
+
+	aliases {
+		// serial0 = &uart0;
+		i2c0 = &i2c0;
+		i2c1 = &i2c1;
+		i2c2 = &i2c2;
+	};
+
+	chosen {
+		// stdout-path = "serial0:115200n8";
+	};
+
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		timebase-frequency = <40000000>;
+
+		cpu0: cpu@0 {
+			compatible = "riscv";
+			device_type = "cpu";
+			reg = <0>;
+			riscv,isa = "rv32imafdc";
+			riscv,isa-base = "rv32i";
+			riscv,isa-extensions = "i", "m", "a", "f", "d", "c";
+			mmu-type = "riscv,sv32";
+			i-cache-size = <0x4000>;
+			i-cache-line-size = <0x40>;
+			d-cache-size = <0x4000>;
+			d-cache-line-size = <0x40>;
+			next-level-cache = <&l2_cache>;
+			clocks = <&aon_ccu CLK_A27L2>;
+			clock-latency = <2000000>;
+			clock-frequency = <1000000000>;
+			operating-points-v2 = <&cpu_opp_table>;
+			status = "okay";
+
+			cpu0_intc: interrupt-controller {
+				compatible = "riscv,cpu-intc";
+				#interrupt-cells = <1>;
+				interrupt-controller;
+			};
+		};
+	};
+
+	cpu_opp_table: opp-table-cpu {
+		compatible = "operating-points-v2";
+		opp-shared;
+
+		opp-360000000 {
+			opp-hz = /bits/ 64 <360000000>;
+			opp-microvolt = <920000>;
+			clock-latency-ns = <244144>;
+		};
+
+		opp-480000000 {
+			opp-hz = /bits/ 64 <480000000>;
+			opp-microvolt = <920000>;
+			clock-latency-ns = <244144>;
+		};
+
+		opp-600000000 {
+			opp-hz = /bits/ 64 <600000000>;
+			opp-microvolt = <920000>;
+			clock-latency-ns = <244144>;
+		};
+
+		opp-720000000 {
+			opp-hz = /bits/ 64 <720000000>;
+			opp-microvolt = <920000>;
+			clock-latency-ns = <244144>;
+		};
+
+		opp-840000000 {
+			opp-hz = /bits/ 64 <840000000>;
+			opp-microvolt = <920000>;
+			clock-latency-ns = <244144>;
+		};
+
+		opp-960000000 {
+			opp-hz = /bits/ 64 <960000000>;
+			opp-microvolt = <920000>;
+			clock-latency-ns = <244144>;
+		};
+
+		/* Can be enabled if HOSC = 40Mhz. */
+		opp-1000000000 {
+			opp-hz = /bits/ 64 <1000000000>;
+			opp-microvolt = <920000>;
+			clock-latency-ns = <244144>;
+			status = "disabled";
+		};
+
+		/* Can be enabled if HOSC = 24Mhz. */
+		opp-1008000000 {
+			opp-hz = /bits/ 64 <1008000000>;
+			opp-microvolt = <920000>;
+			clock-latency-ns = <244144>;
+			status = "disabled";
+		};
+	};
+
+	dcxo40M: dcxo40M-clk {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <40000000>;
+		clock-output-names = "dcxo40M";
+	};
+
+	dcxo24M: dcxo24M-clk {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <24000000>;
+		clock-output-names = "dcxo24M";
+	};
+
+	soc {
+		compatible = "simple-bus";
+		#address-cells = <2>;
+		#size-cells = <2>;
+		dma-noncoherent;
+		ranges;
+
+		rtc: syscon@4a000000 {
+			compatible = "syscon", "simple-mfd";
+			reg = <0x0 0x4a000000 0x0 0x1000>;
+
+			reboot_mode: reboot-mode {
+				compatible = "syscon-reboot-mode";
+				offset = <0x208>;
+				mask = <0xffffffff>;
+				mode-normal = <0x00000000>;
+				mode-usb = <0x5aa5a55a>;
+			};
+		};
+
+		aon_ccu: clock-controller@4a010000 {
+			compatible = "allwinner,sun300i-v821b-r-ccu";
+			reg = <0x0 0x4a010000 0x0 0x600>;
+			clocks = <&dcxo40M>, <&dcxo24M>;
+			clock-names = "dcxo40M", "dcxo24M";
+			#clock-cells = <1>;
+			#reset-cells = <1>;
+		};
+
+		ccu: clock-controller@42001000 {
+			compatible = "allwinner,sun300i-v821-ccu";
+			reg = <0x0 0x42001000 0x0 0x1000>;
+			clocks = <&aon_ccu CLK_DCXO>;
+			clock-names = "dcxo";
+			#clock-cells = <1>;
+			#reset-cells = <1>;
+		};
+
+		l2_cache: cache-controller@49000000 {
+			compatible = "andestech,llcache", "cache";
+			reg = <0x0 0x49000000 0x0 0x300>;
+			cache-line-size = <64>;
+			cache-level = <2>;
+			cache-size = <0x20000>;
+			cache-unified;
+		};
+
+		plic0: interrupt-controller@48000000 {
+			compatible = "allwinner,sun300i-v821-plic", "thead,c900-plic";
+			reg = <0x0 0x48000000 0x0 0x400000>;
+			#address-cells = <0>;
+			#interrupt-cells = <2>;
+			interrupt-controller;
+			interrupts-extended = <&cpu0_intc 11>, <&cpu0_intc 9>;
+			riscv,ndev = <187>;
+		};
+
+		spi0: spi@44025000 {
+			compatible = "allwinner,sun300i-v821-spi";
+			reg = <0x0 0x44025000 0x0 0x1000>;
+			interrupts-extended = <&plic0 16 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&ccu CLK_BUS_SPI>, <&ccu CLK_SPI>;
+			clock-names = "ahb", "mod";
+			resets = <&ccu RST_BUS_SPI>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
+		};
+
+		spif0: spi@44f00000 {
+			compatible = "allwinner,sun300i-v821-spif";
+			reg = <0x0 0x44f00000 0x0 0x1000>;
+			interrupts-extended = <&plic0 20 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&aon_ccu CLK_PLL_PERI_CKO_384M>, <&ccu CLK_SPIF>, <&ccu CLK_BUS_SPIF>;
+			clock-names = "pclk", "mclk", "bus";
+			resets = <&ccu RST_BUS_SPIF>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
+			pinctrl-names = "default";
+			pinctrl-0 = <&spif_data_pins &spif_control_pins>;
+		};
+
+		mmc0: mmc@44020000 {
+			compatible = "allwinner,sun300i-v821-mmc";
+			reg = <0x0 0x44020000 0x0 0x1000>;
+			interrupts-extended = <&plic0 41 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&aon_ccu CLK_DCXO>, <&aon_ccu CLK_PLL_PERI_CKO_192M>, <&aon_ccu CLK_PLL_PERI_CKO_219M>, <&ccu CLK_SMHC0>, <&ccu CLK_BUS_SMHC0>, <&ccu CLK_MBUS_SMHC0>;
+			clock-names = "osc24m", "pll_periph", "pll_periph_2", "mmc", "ahb", "mbus";
+			resets = <&ccu RST_BUS_SMHC0>;
+			reset-names = "ahb";
+			status = "disabled";
+		};
+
+		mmc1: mmc@44021000 {
+			compatible = "allwinner,sun300i-v821-mmc";
+			reg = <0x0 0x44021000 0x0 0x1000>;
+			interrupts-extended = <&plic0 42 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&aon_ccu CLK_DCXO>, <&aon_ccu CLK_PLL_PERI_CKO_192M>, <&aon_ccu CLK_PLL_PERI_CKO_219M>, <&ccu CLK_SMHC1>, <&ccu CLK_BUS_SMHC1>, <&ccu CLK_MBUS_SMHC1>;
+			clock-names = "osc24m", "pll_periph", "pll_periph_2", "mmc", "ahb", "mbus";
+			resets = <&ccu RST_BUS_SMHC1>;
+			reset-names = "ahb";
+			pinctrl-names = "default", "sleep";
+			pinctrl-0 = <&sdc1_sdio_pins>;
+			pinctrl-1 = <&sdc1_sdio_sleep_pins>;
+			status = "disabled";
+		};
+
+		wdt: watchdog@4a001000 {
+			compatible = "allwinner,wdt-v105";
+			reg = <0x0 0x4a001000 0x0 0x20>;
+			sys-24m-clk-select;
+			status = "disabled";
+
+			// resets = <&prcm_ccu RST_RTC_WDG>;
+		};
+
+		soc_timer0: timer@43008000 {
+			compatible = "allwinner,hstimer-v100";
+			device_type = "soc_timer";
+			reg = <0x0 0x43008000 0x0 0x400>;
+			interrupts-extended = <&plic0 56 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&dcxo24M>, <&ccu CLK_HSTIMER>;
+			clock-names = "parent", "bus";
+			resets = <&ccu RST_BUS_HSTIMER>;
+		};
+
+		sid: efuse@43006000 {
+			compatible = "allwinner,sun300i-v821-sid";
+			reg = <0x0 0x43006000 0x0 0x1000>;
+			#address-cells = <1>;
+			#size-cells = <1>;
+		};
+
+		usbphy: phy@44100400 {
+			compatible = "allwinner,sun300i-v821-usb-phy";
+			reg = <0x0 0x44100400 0x0 0x100>, <0x0 0x44101800 0x0 0x100>;
+			reg-names = "phy_ctrl", "pmu0";
+			clocks = <&ccu CLK_USB_24M>;
+			clock-names = "usb0_phy";
+			resets = <&ccu RST_BUS_USBPHY>;
+			reset-names = "usb0_reset";
+			#phy-cells = <1>;
+			allwinner,res-tune = <8>;
+			allwinner,rise-tune = <0>;
+			allwinner,tx-tune = <11>;
+			allwinner,tx-fsls-tune = <1>;
+			allwinner,preemp-amp-tune = <2>;
+			allwinner,disc-thresh = <0x6>;
+		};
+
+		usb_otg: usb@44100000 {
+			compatible = "allwinner,sun300i-v821-musb";
+			reg = <0x0 0x44100000 0x0 0x400>;
+			#address-cells = <2>;
+			#size-cells = <2>;
+			ranges;
+			interrupts-extended = <&plic0 30 IRQ_TYPE_LEVEL_HIGH>;
+			interrupt-names = "mc";
+			clocks = <&ccu CLK_USBOTG>, <&ccu CLK_USB>, <&ccu CLK_MBUS_USB>;
+			clock-names = "otg", "ahb", "mbus";
+			resets = <&ccu RST_BUS_USBOTG>, <&ccu RST_BUS_USB>;
+			reset-names = "otg", "usb_rst";
+			phys = <&usbphy 0>;
+			phy-names = "usb";
+			extcon = <&usbphy 0>;
+			dr_mode = "peripheral";
+			status = "disabled";
+
+			ehci0: usb@44101000 {
+				compatible = "allwinner,sun300i-v821-ehci", "generic-ehci";
+				reg = <0x0 0x44101000 0x0 0x100>;
+				interrupts-extended = <&plic0 31 IRQ_TYPE_LEVEL_HIGH>;
+				clocks = <&ccu CLK_USB_24M>, <&ccu CLK_USBEHCI>, <&ccu CLK_MBUS_USB>, <&ccu CLK_USB>;
+				resets = <&ccu RST_BUS_USBEHCI>, <&ccu RST_BUS_USB>;
+				phys = <&usbphy 0>;
+				phy-names = "usb";
+			};
+
+			ohci0: usb@44101400 {
+				compatible = "allwinner,sun300i-v821-ohci", "generic-ohci";
+				reg = <0x0 0x44101400 0x0 0x100>;
+				interrupts-extended = <&plic0 32 IRQ_TYPE_LEVEL_HIGH>;
+				clocks = <&ccu CLK_USB_12M>, <&ccu CLK_USBOHCI>, <&ccu CLK_USB>, <&ccu CLK_USB_48M>;
+				resets = <&ccu RST_BUS_USBOHCI>, <&ccu RST_BUS_USB>;
+				phys = <&usbphy 0>;
+				phy-names = "usb";
+			};
+		};
+
+		/* Preferred debugging serial port on this platform */
+		uart0: serial@42500000 {
+			compatible = "snps,dw-apb-uart";
+			reg = <0x0 0x42500000 0x0 0x400>;
+			interrupts-extended = <&plic0 3 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&ccu CLK_UART0>;
+			clock-names = "baudclk";
+			resets = <&ccu RST_BUS_UART0>;
+			reg-shift = <2>;
+			reg-io-width = <4>;
+			fifo-size = <64>;
+			status = "okay";
+			pinctrl-names = "default";
+			pinctrl-0 = <&uart0_pl_pins>;
+		};
+
+		uart1: serial@42500400 {
+			compatible = "snps,dw-apb-uart";
+			reg = <0x0 0x42500400 0x0 0x400>;
+			interrupts-extended = <&plic0 4 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&ccu CLK_UART1>;
+			clock-names = "baudclk";
+			resets = <&ccu RST_BUS_UART1>;
+			reg-shift = <2>;
+			reg-io-width = <4>;
+			fifo-size = <128>;
+			status = "disabled";
+		};
+
+		uart2: serial@42500800 {
+			compatible = "snps,dw-apb-uart";
+			reg = <0x0 0x42500800 0x0 0x400>;
+			interrupts-extended = <&plic0 5 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&ccu CLK_UART2>;
+			clock-names = "baudclk";
+			resets = <&ccu RST_BUS_UART2>;
+			reg-shift = <2>;
+			reg-io-width = <4>;
+			fifo-size = <128>;
+			status = "disabled";
+		};
+
+		uart3: serial@42500c00 {
+			compatible = "snps,dw-apb-uart";
+			reg = <0x0 0x42500c00 0x0 0x400>;
+			interrupts-extended = <&plic0 6 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&ccu CLK_UART3>;
+			clock-names = "baudclk";
+			resets = <&ccu RST_BUS_UART3>;
+			reg-shift = <2>;
+			reg-io-width = <4>;
+			fifo-size = <128>;
+			status = "disabled";
+		};
+
+		i2c0: i2c@42502000 {
+			compatible = "allwinner,sun6i-a31-i2c";
+			reg = <0x0 0x42502000 0x0 0x400>;
+			interrupts-extended = <&plic0 10 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&ccu CLK_TWI0>;
+			resets = <&ccu RST_BUS_TWI0>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
+		};
+
+		i2c1: i2c@42502400 {
+			compatible = "allwinner,sun6i-a31-i2c";
+			reg = <0x0 0x42502400 0x0 0x400>;
+			interrupts-extended = <&plic0 11 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&ccu CLK_TWI1>;
+			resets = <&ccu RST_BUS_TWI1>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
+		};
+
+		i2c2: i2c@42502800 {
+			compatible = "allwinner,sun6i-a31-i2c";
+			reg = <0x0 0x42502800 0x0 0x400>;
+			interrupts-extended = <&plic0 12 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&ccu CLK_TWI2>;
+			resets = <&ccu RST_BUS_TWI2>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
+		};
+
+		/* This is a virtual clk, for gpio use only */
+		losc: losc_clk {
+			#clock-cells = <0>;
+			compatible = "fixed-clock";
+			clock-frequency = <32000>;
+			clock-output-names = "losc";
+		};
+
+		pio: pinctrl@42000000 {
+			compatible = "allwinner,v821b-pinctrl";
+			reg = <0x0 0x42000000 0x0 0x500>;
+			interrupts-extended = <&plic0 68 IRQ_TYPE_LEVEL_HIGH>, <&plic0 72 IRQ_TYPE_LEVEL_HIGH>, <&plic0 74 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&aon_ccu CLK_APB0>, <&aon_ccu CLK_DCXO>, <&losc>;
+			clock-names = "apb", "hosc", "losc";
+			gpio-controller;
+			#gpio-cells = <3>;
+			interrupt-controller;
+			#interrupt-cells = <3>;
+
+			sdc1_sdio_pins: sdc1-sdio-pins {
+				pins = "PD1", "PD2", "PD3", "PD4", "PD5", "PD6";
+				function = "sdc1";
+				drive-strength = <40>;
+				bias-pull-up;
+			};
+
+			sdc1_sdio_sleep_pins: sdc1-sdio-sleep-pins {
+				pins = "PD1", "PD2", "PD3", "PD4", "PD5", "PD6";
+				function = "gpio_in";
+			};
+
+			twi0_pa_pins: twi0-pa-pins {
+				pins = "PA3", "PA4";
+				function = "twi0";
+				bias-pull-up;
+			};
+
+			twi1_pd_pins: twi1-pd-pins {
+				pins = "PD18", "PD19";
+				function = "twi1";
+				bias-pull-up;
+			};
+
+			spif_data_pins: spif-data-pins {
+				pins = "PC8", "PC9", "PC11";
+				function = "spif";
+				drive-strength = <20>;
+			};
+
+			spif_control_pins: spif-control-pins {
+				pins = "PC6", "PC7", "PC10";
+				function = "spif";
+				drive-strength = <20>;
+				bias-pull-up;
+			};
+
+			uart1_pd_pins: uart1-pd-pins {
+				pins = "PD7", "PD8", "PD9", "PD10";
+				function = "uart1";
+			};
+		};
+
+		rtc_pio: pinctrl@42000540 {
+			compatible = "allwinner,sun300i-v821-r-pinctrl";
+			reg = <0x0 0x42000540 0x0 0x100>;
+			interrupts-extended = <&plic0 84 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&dcxo24M>;
+			clock-names = "hosc";
+			gpio-controller;
+			#gpio-cells = <3>;
+			interrupt-controller;
+			#interrupt-cells = <3>;
+
+			uart0_pl_pins: uart0-pl-pins {
+				pins = "PL4", "PL5";
+				function = "uart0";
+			};
+		};
+	};
+};

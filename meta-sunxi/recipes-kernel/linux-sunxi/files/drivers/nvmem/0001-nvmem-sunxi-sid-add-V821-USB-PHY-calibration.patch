@@ -1,0 +1,28 @@
+Upstream-Status: Pending
+
+diff --git a/drivers/nvmem/sunxi_sid.c b/drivers/nvmem/sunxi_sid.c
+index 7ca9b128d097..0a15da93dd2d 100644
+--- a/drivers/nvmem/sunxi_sid.c
++++ b/drivers/nvmem/sunxi_sid.c
+@@ -202,6 +202,11 @@ static const struct sunxi_sid_cfg sun50i_h6_cfg = {
+ 	.size = 0x200,
+ };
+ 
++static const struct sunxi_sid_cfg sun300i_v821_cfg = {
++	.value_offset = 0x200,
++	.size = 0x61,
++};
++
+ static const struct of_device_id sunxi_sid_of_match[] = {
+ 	{ .compatible = "allwinner,sun4i-a10-sid", .data = &sun4i_a10_cfg },
+ 	{ .compatible = "allwinner,sun7i-a20-sid", .data = &sun7i_a20_cfg },
+@@ -210,6 +215,7 @@ static const struct of_device_id sunxi_sid_of_match[] = {
+ 	{ .compatible = "allwinner,sun8i-a83t-sid", .data = &sun50i_a64_cfg },
+ 	{ .compatible = "allwinner,sun8i-h3-sid", .data = &sun8i_h3_cfg },
+ 	{ .compatible = "allwinner,sun20i-d1-sid", .data = &sun50i_a64_cfg },
++	{ .compatible = "allwinner,sun300i-v821-sid", .data = &sun300i_v821_cfg },
+ 	{ .compatible = "allwinner,sun50i-a64-sid", .data = &sun50i_a64_cfg },
+ 	{ .compatible = "allwinner,sun50i-h5-sid", .data = &sun50i_a64_cfg },
+ 	{ .compatible = "allwinner,sun50i-h6-sid", .data = &sun50i_h6_cfg },
+-- 
+2.55.0

@@ -1,6 +1,10 @@
 DEPENDS:remove = "glib-2.0"
 
-PACKAGECONFIG = ""
+# D-Bus 1.16 no longer builds the daemon unless message-bus is selected.
+# Keep the C2A build minimal (no user session, systemd, X11 or tests), while
+# retaining the system bus and the service activation supported before the
+# Meson-based recipe made these features explicit.
+PACKAGECONFIG = "message-bus traditional-activation"
 
 EXTRA_OECONF:append = " \
     --disable-tests \

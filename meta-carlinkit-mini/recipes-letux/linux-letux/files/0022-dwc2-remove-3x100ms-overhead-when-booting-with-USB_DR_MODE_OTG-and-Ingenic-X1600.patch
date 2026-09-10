@@ -1,4 +1,6 @@
 Subject: [PATCH] dwc2: remove 3x100ms overhead when booting with USB_DR_MODE_OTG and Ingenic X1600 
+Upstream-Status: Pending
+
 
 ---
  drivers/usb/dwc2/core.c   | 54 ++++++++++++++++++++++++++++++++-------

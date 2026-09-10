@@ -1,0 +1,33 @@
+Date: Sun, 30 Aug 2026 14:00:00 +0200
+Subject: [PATCH] llvm-libgcc: pass target flags when generating version script
+
+gcc_s.ver.in detects ARM hard-float support from compiler predefined macros.
+The custom preprocessing command only invokes CMAKE_C_COMPILER, unlike the
+normal compile rules, so a cross compiler configured for ARMv7 hard-float is
+invoked without its -mcpu and -mfloat-abi flags and fails the platform check.
+
+Split CMAKE_C_FLAGS into a CMake list and pass it to the custom command so its
+target view matches the objects and libraries whose symbols it describes.
+
+Upstream-Status: Pending
+
+---
+ llvm-libgcc/CMakeLists.txt | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/llvm-libgcc/CMakeLists.txt b/llvm-libgcc/CMakeLists.txt
+index 9e46ac98d6ee..dc779170529d 100644
+--- a/llvm-libgcc/CMakeLists.txt
++++ b/llvm-libgcc/CMakeLists.txt
+@@ -100,8 +100,11 @@ set(LIBUNWIND_HAS_GCC_S_LIB OFF)
+ add_subdirectory(${LLVM_LIBGCC_LIBUNWIND_PATH} ${LLVM_LIBGCC_LIBUNWIND_BINARY_DIR})
+ 
++separate_arguments(LLVM_LIBGCC_C_FLAGS NATIVE_COMMAND "${CMAKE_C_FLAGS}")
++
+ add_custom_target(gcc_s.ver
+   SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/gcc_s.ver.in
+   COMMAND ${CMAKE_C_COMPILER} -E
++    ${LLVM_LIBGCC_C_FLAGS}
+     -xc ${CMAKE_CURRENT_SOURCE_DIR}/gcc_s.ver.in
+     -o ${CMAKE_CURRENT_BINARY_DIR}/gcc_s.ver
+ )

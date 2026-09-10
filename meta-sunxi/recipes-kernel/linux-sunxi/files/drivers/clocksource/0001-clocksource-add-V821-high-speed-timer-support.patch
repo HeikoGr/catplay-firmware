@@ -1,0 +1,562 @@
+Date: Sat, 15 Aug 2026 06:21:32 +0000
+Subject: [PATCH] clocksource: add V821 high-speed timer support
+
+Upstream-Status: Pending
+---
+ drivers/clocksource/Kconfig        |   9 +
+ drivers/clocksource/Makefile       |   1 +
+ drivers/clocksource/timer-sun50i.c | 513 +++++++++++++++++++++++++++++
+ 3 files changed, 523 insertions(+)
+ create mode 100644 drivers/clocksource/timer-sun50i.c
+
+diff --git a/drivers/clocksource/Kconfig b/drivers/clocksource/Kconfig
+index d9c76dd..a8ea7bd 100644
+--- a/drivers/clocksource/Kconfig
++++ b/drivers/clocksource/Kconfig
+@@ -167,6 +167,15 @@ config SUN5I_HSTIMER
+ 	help
+ 	  Enables support the Sun5i timer.
+ 
++config SUN50I_HSTIMER
++	bool "Sun50i HSTIMER driver"
++	depends on HAS_IOMEM
++	depends on COMMON_CLK
++	select CLKSRC_MMIO
++	select TIMER_OF
++	help
++	  Enables support for the Sun50i timer.
++
+ config TEGRA_TIMER
+ 	bool "Tegra timer driver" if COMPILE_TEST
+ 	select CLKSRC_MMIO
+diff --git a/drivers/clocksource/Makefile b/drivers/clocksource/Makefile
+index b46376a..c1130cd 100644
+--- a/drivers/clocksource/Makefile
++++ b/drivers/clocksource/Makefile
+@@ -35,6 +35,7 @@ obj-$(CONFIG_MXS_TIMER)		+= mxs_timer.o
+ obj-$(CONFIG_CLKSRC_PXA)	+= timer-pxa.o
+ obj-$(CONFIG_SUN4I_TIMER)	+= timer-sun4i.o
+ obj-$(CONFIG_SUN5I_HSTIMER)	+= timer-sun5i.o
++obj-$(CONFIG_SUN50I_HSTIMER)	+= timer-sun50i.o
+ obj-$(CONFIG_MESON6_TIMER)	+= timer-meson6.o
+ obj-$(CONFIG_TEGRA_TIMER)	+= timer-tegra.o
+ obj-$(CONFIG_TEGRA186_TIMER)	+= timer-tegra186.o
+diff --git a/drivers/clocksource/timer-sun50i.c b/drivers/clocksource/timer-sun50i.c
+new file mode 100644
+index 0000000..a190e6d
+--- /dev/null
++++ b/drivers/clocksource/timer-sun50i.c
+@@ -0,0 +1,513 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++/*
++ * Allwinner HSTIMER v100 clocksource/clockevent driver
++ *
++ * The sun300iw1/V821 HSTIMER uses the "swapped IVH/CVL" register layout:
++ *
++ *   CTL  +0x00
++ *   IVL  +0x04
++ *   IVH  +0x08
++ *   CVL  +0x0c
++ *   CVH  +0x10
++ *
++ * Channel 0 is used as a clockevent and channel 1 as a free-running
++ * 56-bit clocksource.
++ */
++
++#include <linux/clk.h>
++#include <linux/clockchips.h>
++#include <linux/clocksource.h>
++#include <linux/init.h>
++#include <linux/interrupt.h>
++#include <linux/io.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/reset.h>
++#include <linux/sched_clock.h>
++#include <linux/slab.h>
++
++#include "timer-of.h"
++
++#define HSTIMER_IRQ_EN             0x00
++#define HSTIMER_IRQ_ST             0x04
++
++#define HSTIMER_CH_BASE(ch)            (0x20 + 0x20 * (ch))
++#define HSTIMER_CTL(ch)                (HSTIMER_CH_BASE(ch) + 0x00)
++#define HSTIMER_INTV_LO(ch)            (HSTIMER_CH_BASE(ch) + 0x04)
++#define HSTIMER_CNTV_HI(ch)            (HSTIMER_CH_BASE(ch) + 0x10)
++
++#define HSTIMER_CTL_ENABLE         BIT(0)
++#define HSTIMER_CTL_RELOAD         BIT(1)
++#define HSTIMER_CTL_ONESHOT            BIT(7)
++
++#define HSTIMER_IRQ(ch)                BIT(ch)
++
++#define HSTIMER_HI_MASK                GENMASK(23, 0)
++#define HSTIMER_WIDTH              56
++#define HSTIMER_SYNC_TICKS         3
++#define HSTIMER_CLKEVT_RATING          50
++#define HSTIMER_CLKEVT_RATING_FORCED       500
++#define HSTIMER_CLKSRC_RATING          250
++
++#define HSTIMER_CLKEVT_CH          0
++#define HSTIMER_CLKSRC_CH          1
++
++struct sunxi_hstimer_quirks {
++   bool swap_ivh_cvl_space;
++   bool broken_riscv_timer;
++};
++
++struct sunxi_hstimer {
++   struct timer_of to;
++   struct clk *parent_clk;
++   struct clk *bus_clk;
++   struct clk *timer_clk[2];
++   struct reset_control *reset;
++   const struct sunxi_hstimer_quirks *quirks;
++};
++
++static struct sunxi_hstimer *hstimer;
++
++static unsigned long sunxi_hstimer_intv_hi(const struct sunxi_hstimer *timer,
++                      unsigned int channel)
++{
++   return HSTIMER_CH_BASE(channel) +
++       (timer->quirks->swap_ivh_cvl_space ? 0x08 : 0x0c);
++}
++
++static unsigned long sunxi_hstimer_cntv_lo(const struct sunxi_hstimer *timer,
++                      unsigned int channel)
++{
++   return HSTIMER_CH_BASE(channel) +
++       (timer->quirks->swap_ivh_cvl_space ? 0x0c : 0x08);
++}
++
++static u64 notrace sunxi_hstimer_read(void)
++{
++   void __iomem *base = timer_of_base(&hstimer->to);
++   u32 hi1, hi2, lo;
++
++   /*
++    * The hardware counter counts down and is split across a 24-bit high
++    * word and a 32-bit low word. Read the high word on both sides of the
++    * low-word access so that a low-word wrap cannot produce a torn
++    * 56-bit timestamp.
++    */
++   do {
++       hi1 = readl_relaxed(base +
++                   HSTIMER_CNTV_HI(HSTIMER_CLKSRC_CH));
++       lo = readl_relaxed(base +
++                  sunxi_hstimer_cntv_lo(hstimer,
++                             HSTIMER_CLKSRC_CH));
++       hi2 = readl_relaxed(base +
++                   HSTIMER_CNTV_HI(HSTIMER_CLKSRC_CH));
++   } while (unlikely(hi1 != hi2));
++
++   return ((u64)(~hi1 & HSTIMER_HI_MASK) << 32) | (u32)~lo;
++}
++
++static u64 sunxi_hstimer_clocksource_read(struct clocksource *cs)
++{
++   return sunxi_hstimer_read();
++}
++
++/*
++ * Hardware requires at least two source-clock cycles between disabling
++ * a timer and reprogramming it. Channel 1 remains running permanently.
++ */
++static void sunxi_hstimer_sync(void)
++{
++   u64 old = sunxi_hstimer_read();
++
++   while (sunxi_hstimer_read() - old < HSTIMER_SYNC_TICKS)
++       cpu_relax();
++}
++
++static void sunxi_hstimer_stop(void __iomem *base, unsigned int channel)
++{
++   u32 val;
++
++   val = readl_relaxed(base + HSTIMER_CTL(channel));
++   val &= ~HSTIMER_CTL_ENABLE;
++   writel_relaxed(val, base + HSTIMER_CTL(channel));
++
++   sunxi_hstimer_sync();
++}
++
++static void sunxi_hstimer_set_interval(void __iomem *base,
++                     unsigned int channel, u64 cycles)
++{
++   writel_relaxed(lower_32_bits(cycles),
++              base + HSTIMER_INTV_LO(channel));
++   writel_relaxed(upper_32_bits(cycles) & HSTIMER_HI_MASK,
++              base + sunxi_hstimer_intv_hi(hstimer, channel));
++}
++
++static void sunxi_hstimer_start(void __iomem *base, unsigned int channel,
++               bool periodic)
++{
++   u32 val;
++
++   val = readl_relaxed(base + HSTIMER_CTL(channel));
++
++   if (periodic)
++       val &= ~HSTIMER_CTL_ONESHOT;
++   else
++       val |= HSTIMER_CTL_ONESHOT;
++
++   val |= HSTIMER_CTL_ENABLE | HSTIMER_CTL_RELOAD;
++   writel_relaxed(val, base + HSTIMER_CTL(channel));
++}
++
++static int sunxi_hstimer_shutdown(struct clock_event_device *evt)
++{
++   struct timer_of *to = to_timer_of(evt);
++
++   sunxi_hstimer_stop(timer_of_base(to), HSTIMER_CLKEVT_CH);
++
++   return 0;
++}
++
++static int sunxi_hstimer_set_oneshot(struct clock_event_device *evt)
++{
++   struct timer_of *to = to_timer_of(evt);
++
++   /*
++    * Enter one-shot mode without arming the timer with a stale interval.
++    * set_next_event() will program and start the actual event.
++    */
++   sunxi_hstimer_stop(timer_of_base(to), HSTIMER_CLKEVT_CH);
++
++   return 0;
++}
++
++static int sunxi_hstimer_set_periodic(struct clock_event_device *evt)
++{
++   struct timer_of *to = to_timer_of(evt);
++   void __iomem *base = timer_of_base(to);
++
++   sunxi_hstimer_stop(base, HSTIMER_CLKEVT_CH);
++   sunxi_hstimer_set_interval(base, HSTIMER_CLKEVT_CH,
++                  timer_of_period(to));
++   sunxi_hstimer_start(base, HSTIMER_CLKEVT_CH, true);
++
++   return 0;
++}
++
++static int sunxi_hstimer_next_event(unsigned long evt,
++                   struct clock_event_device *clkevt)
++{
++   struct timer_of *to = to_timer_of(clkevt);
++   void __iomem *base = timer_of_base(to);
++   u64 cycles = max_t(u64, evt, HSTIMER_SYNC_TICKS);
++
++   sunxi_hstimer_stop(base, HSTIMER_CLKEVT_CH);
++
++   sunxi_hstimer_set_interval(base, HSTIMER_CLKEVT_CH, cycles);
++   sunxi_hstimer_start(base, HSTIMER_CLKEVT_CH, false);
++
++   return 0;
++}
++
++static irqreturn_t sunxi_hstimer_interrupt(int irq, void *dev_id)
++{
++   struct clock_event_device *evt = dev_id;
++   struct timer_of *to = to_timer_of(evt);
++   void __iomem *base = timer_of_base(to);
++   u32 enable, status;
++
++   enable = readl_relaxed(base + HSTIMER_IRQ_EN);
++   status = readl_relaxed(base + HSTIMER_IRQ_ST);
++
++   if (!(enable & status & HSTIMER_IRQ(HSTIMER_CLKEVT_CH)))
++       return IRQ_NONE;
++
++   /*
++    * W1C and force the write to reach the timer before the clockevent
++    * core is allowed to reprogram the channel from event_handler().
++    */
++   writel(HSTIMER_IRQ(HSTIMER_CLKEVT_CH), base + HSTIMER_IRQ_ST);
++   readl(base + HSTIMER_IRQ_ST);
++
++   evt->event_handler(evt);
++
++   return IRQ_HANDLED;
++}
++
++static int sunxi_hstimer_enable_clocks(struct sunxi_hstimer *timer)
++{
++   int ret;
++
++   ret = reset_control_deassert(timer->reset);
++   if (ret)
++       return ret;
++
++   ret = clk_prepare_enable(timer->bus_clk);
++   if (ret)
++       goto err_assert_reset;
++
++   if (timer->timer_clk[0]) {
++       ret = clk_prepare_enable(timer->timer_clk[0]);
++       if (ret)
++           goto err_disable_bus;
++   }
++
++   if (timer->timer_clk[1]) {
++       ret = clk_prepare_enable(timer->timer_clk[1]);
++       if (ret)
++           goto err_disable_timer0;
++   }
++
++   if (timer->timer_clk[0]) {
++       ret = clk_set_parent(timer->timer_clk[0], timer->parent_clk);
++       if (ret)
++           goto err_disable_timer1;
++   }
++
++   return 0;
++
++err_disable_timer1:
++   if (timer->timer_clk[1])
++       clk_disable_unprepare(timer->timer_clk[1]);
++err_disable_timer0:
++   if (timer->timer_clk[0])
++       clk_disable_unprepare(timer->timer_clk[0]);
++err_disable_bus:
++   clk_disable_unprepare(timer->bus_clk);
++err_assert_reset:
++   reset_control_assert(timer->reset);
++
++   return ret;
++}
++
++static void sunxi_hstimer_disable_clocks(struct sunxi_hstimer *timer)
++{
++   if (timer->timer_clk[1])
++       clk_disable_unprepare(timer->timer_clk[1]);
++   if (timer->timer_clk[0])
++       clk_disable_unprepare(timer->timer_clk[0]);
++
++   clk_disable_unprepare(timer->bus_clk);
++
++   /*
++    * Do not assert reset here. The vendor driver warns that doing so
++    * can return this block to secure mode.
++    */
++}
++
++static int sunxi_hstimer_probe(struct platform_device *pdev)
++{
++   struct device_node *node = pdev->dev.of_node;
++   struct sunxi_hstimer *timer;
++   struct clk *rate_clk;
++   void __iomem *base;
++   unsigned long rate;
++   u32 val;
++   int ret;
++
++   timer = kzalloc(sizeof(*timer), GFP_KERNEL);
++   if (!timer)
++       return -ENOMEM;
++
++   timer->quirks = of_device_get_match_data(&pdev->dev);
++   if (!timer->quirks) {
++       ret = -EINVAL;
++       goto err_free_timer;
++   }
++
++   timer->to.flags = TIMER_OF_BASE | TIMER_OF_IRQ;
++   timer->to.clkevt = (struct clock_event_device) {
++       .name           = "sunxi-hstimer",
++       .rating         = timer->quirks->broken_riscv_timer ?
++                     HSTIMER_CLKEVT_RATING_FORCED :
++                     HSTIMER_CLKEVT_RATING,
++       .features       = CLOCK_EVT_FEAT_PERIODIC |
++                     CLOCK_EVT_FEAT_ONESHOT,
++       .set_state_shutdown = sunxi_hstimer_shutdown,
++       .set_state_periodic = sunxi_hstimer_set_periodic,
++       .set_state_oneshot  = sunxi_hstimer_set_oneshot,
++       .set_next_event     = sunxi_hstimer_next_event,
++       .cpumask        = cpu_possible_mask,
++   };
++   timer->to.of_irq = (struct of_timer_irq) {
++       .handler    = sunxi_hstimer_interrupt,
++       .flags      = IRQF_TIMER | IRQF_IRQPOLL,
++   };
++
++   if (timer->quirks->broken_riscv_timer)
++       dev_warn(&pdev->dev,
++            "broken RISC-V timer; forcing HSTIMER clockevent rating to %u to prevent system hang after 120s\n",
++            HSTIMER_CLKEVT_RATING_FORCED);
++
++   ret = timer_of_init(node, &timer->to);
++   if (ret)
++       goto err_free_timer;
++
++   timer->parent_clk = of_clk_get_by_name(node, "parent");
++   if (IS_ERR(timer->parent_clk)) {
++       ret = PTR_ERR(timer->parent_clk);
++       pr_err("%pOF: failed to get parent clock: %d\n", node, ret);
++       goto err_timer_cleanup;
++   }
++
++   timer->bus_clk = of_clk_get_by_name(node, "bus");
++   if (IS_ERR(timer->bus_clk)) {
++       ret = PTR_ERR(timer->bus_clk);
++       pr_err("%pOF: failed to get bus clock: %d\n", node, ret);
++       goto err_put_parent;
++   }
++
++   /*
++    * These exist on some HSTIMER v100 integrations, but not in the
++    * sun300iw1 DT. Missing optional clocks are therefore expected.
++    */
++   timer->timer_clk[0] = of_clk_get_by_name(node, "timer0-mod");
++   if (IS_ERR(timer->timer_clk[0])) {
++       if (PTR_ERR(timer->timer_clk[0]) == -EPROBE_DEFER) {
++           ret = -EPROBE_DEFER;
++           goto err_put_bus;
++       }
++       timer->timer_clk[0] = NULL;
++   }
++
++   timer->timer_clk[1] = of_clk_get_by_name(node, "timer1-mod");
++   if (IS_ERR(timer->timer_clk[1])) {
++       if (PTR_ERR(timer->timer_clk[1]) == -EPROBE_DEFER) {
++           ret = -EPROBE_DEFER;
++           goto err_put_timer0;
++       }
++       timer->timer_clk[1] = NULL;
++   }
++
++   timer->reset = of_reset_control_get_exclusive(node, NULL);
++   if (IS_ERR(timer->reset)) {
++       ret = PTR_ERR(timer->reset);
++       pr_err("%pOF: failed to get reset: %d\n", node, ret);
++       goto err_put_timer1;
++   }
++
++   ret = sunxi_hstimer_enable_clocks(timer);
++   if (ret) {
++       pr_err("%pOF: failed to enable clocks: %d\n", node, ret);
++       goto err_put_reset;
++   }
++
++   /*
++    * Match the vendor 1.1.7 driver exactly: when no per-channel module
++    * clock is described, the effective timer rate is obtained from the
++    * common bus clock, not from the DT clock named "parent".
++    *
++    * On sun300iw1 CLK_HSTIMER is parented by AHB in APP CCU, while the
++    * separate "parent" clock is only used when timer0-mod exists and can
++    * have its parent selected explicitly.
++    */
++   rate_clk = timer->timer_clk[0] ?: timer->bus_clk;
++   rate = clk_get_rate(rate_clk);
++   if (!rate) {
++       ret = -EINVAL;
++       pr_err("%pOF: timer clock has zero rate\n", node);
++       goto err_disable_clocks;
++   }
++
++   timer->to.of_clk.clk = rate_clk;
++   timer->to.of_clk.rate = rate;
++   timer->to.of_clk.period = DIV_ROUND_UP(rate, HZ);
++
++   hstimer = timer;
++   base = timer_of_base(&timer->to);
++
++   /* Channel 1: free-running 56-bit clocksource. */
++   sunxi_hstimer_set_interval(base, HSTIMER_CLKSRC_CH,
++                  CLOCKSOURCE_MASK(HSTIMER_WIDTH));
++   sunxi_hstimer_start(base, HSTIMER_CLKSRC_CH, true);
++
++   /*
++    * Stop channel 0 only after channel 1 is running, because stop()
++    * uses channel 1 to satisfy the hardware synchronization delay.
++    */
++   sunxi_hstimer_stop(base, HSTIMER_CLKEVT_CH);
++
++   ret = clocksource_mmio_init(base +
++                  sunxi_hstimer_cntv_lo(timer,
++                             HSTIMER_CLKSRC_CH),
++                   node->name, rate,
++                   HSTIMER_CLKSRC_RATING, HSTIMER_WIDTH,
++                   sunxi_hstimer_clocksource_read);
++   if (ret) {
++       pr_err("%pOF: failed to register clocksource: %d\n", node, ret);
++       goto err_disable_clocks;
++   }
++
++   sched_clock_register(sunxi_hstimer_read, HSTIMER_WIDTH, rate);
++
++   /* Channel 0: clockevent. */
++   writel_relaxed(HSTIMER_IRQ(HSTIMER_CLKEVT_CH),
++              base + HSTIMER_IRQ_ST);
++
++   clockevents_config_and_register(&timer->to.clkevt, rate,
++                   HSTIMER_SYNC_TICKS, ULONG_MAX);
++
++   val = readl_relaxed(base + HSTIMER_IRQ_EN);
++   val |= HSTIMER_IRQ(HSTIMER_CLKEVT_CH);
++   writel_relaxed(val, base + HSTIMER_IRQ_EN);
++
++   pr_info("%pOF: 56-bit HSTIMER v100 at %lu Hz (%s), %s IVH/CVL layout\n",
++       node, rate, timer->timer_clk[0] ? "timer0-mod" : "bus",
++       timer->quirks->swap_ivh_cvl_space ? "swapped" : "standard");
++
++   return 0;
++
++err_disable_clocks:
++   hstimer = NULL;
++   sunxi_hstimer_disable_clocks(timer);
++err_put_reset:
++   reset_control_put(timer->reset);
++err_put_timer1:
++   if (timer->timer_clk[1])
++       clk_put(timer->timer_clk[1]);
++err_put_timer0:
++   if (timer->timer_clk[0])
++       clk_put(timer->timer_clk[0]);
++err_put_bus:
++   clk_put(timer->bus_clk);
++err_put_parent:
++   clk_put(timer->parent_clk);
++err_timer_cleanup:
++   timer_of_cleanup(&timer->to);
++err_free_timer:
++   kfree(timer);
++
++   return ret;
++}
++
++static const struct sunxi_hstimer_quirks sun300iw1_hstimer_quirks = {
++   .swap_ivh_cvl_space = true,
++   /*
++       V821 ships with broken OpenSBI which causes instant hang when (re)programming RISC-V timer when uptime is greater than 120 seconds.
++       Note that this _isn't_ the 32-bit wraparound mark, because that happens ~10 seconds earlier without issues.
++       While the timer implementation in OpenSBI was found to have certain hazards, fixing them didn't fix the issue at all.
++       The root cause for now stays a complete mystery.
++       It's rumored that Allwinner might not even be aware of this bug, because their SDK always ships with hstimer, masking the issue.
++   */
++   .broken_riscv_timer = true,
++};
++
++static const struct of_device_id sunxi_hstimer_of_match[] = {
++   {
++       .compatible = "allwinner,hstimer-v100",
++       .data = &sun300iw1_hstimer_quirks,
++   },
++   { }
++};
++
++static struct platform_driver sunxi_hstimer_driver = {
++   .driver = {
++       .name = "sunxi-hstimer",
++       .of_match_table = sunxi_hstimer_of_match,
++       .suppress_bind_attrs = true,
++   },
++};
++builtin_platform_driver_probe(sunxi_hstimer_driver, sunxi_hstimer_probe);
++
++MODULE_AUTHOR("CatPlay");

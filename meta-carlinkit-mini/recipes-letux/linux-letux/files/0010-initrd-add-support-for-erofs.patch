@@ -1,5 +1,7 @@
 Date: Sat, 6 Sep 2025 14:43:38 +0200
 Subject: [PATCH] initrd: add support for erofs
+Upstream-Status: Pending
+
 ---
  include/linux/root_dev.h   |   1 +
  include/uapi/linux/major.h |   2 +

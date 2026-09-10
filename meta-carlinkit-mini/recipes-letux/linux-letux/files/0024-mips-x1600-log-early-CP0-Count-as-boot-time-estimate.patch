@@ -1,4 +1,6 @@
 Subject: [PATCH] mips: x1600: log early CP0 Count as boot time estimate
+Upstream-Status: Pending
+
 
 Capture CP0 Count as early as setup_arch(), after CPU probing but before
 prom_init().  At that point Linux has enough CPU state to read CP0, but has

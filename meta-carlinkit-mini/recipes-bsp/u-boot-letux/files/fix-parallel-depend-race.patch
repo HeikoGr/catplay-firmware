@@ -1,0 +1,33 @@
+Upstream-Status: Inappropriate [legacy U-Boot build-system race]
+
+The SPL Makefile may start two recursive makes for the same source directory:
+one for START and another for the corresponding library. Both processes then
+rebuild the same included .depend file. Writing directly to the destination
+allows their output to interleave and leaves a syntactically invalid Makefile.
+
+Generate the dependency file privately for each recursive make process and
+publish it with an atomic rename only after all sections are complete.
+
+diff --git a/rules.mk b/rules.mk
+--- a/rules.mk
++++ b/rules.mk
+@@ -40,15 +40,16 @@ DEPS := $(basename $(patsubst %,$(obj).depend.%,$(PWD_SRCS)))
+ #	3. Add in the HOSTSRCS
+ $(obj).depend:	$(src)Makefile $(TOPDIR)/config.mk $(DEPS) $(OTHER_SRCS) \
+ 		$(HOSTSRCS)
+-	cat /dev/null $(DEPS) >$@
++	cat /dev/null $(DEPS) >$@.tmp.$$PPID
+ 	@for f in $(OTHER_SRCS); do \
+ 		g=`basename $$f | sed -e 's/\(.*\)\.[[:alnum:]_]/\1.o/'`; \
+-		$(CC) -M $(CPPFLAGS) -MQ $(obj)$$g $$f >> $@ ; \
++		$(CC) -M $(CPPFLAGS) -MQ $(obj)$$g $$f >> $@.tmp.$$PPID ; \
+ 	done
+ 	@for f in $(HOSTSRCS); do \
+ 		g=`basename $$f | sed -e 's/\(.*\)\.[[:alnum:]_]/\1.o/'`; \
+-		$(HOSTCC) -M $(HOSTCPPFLAGS) -MQ $(obj)$$g $$f >> $@ ; \
++		$(HOSTCC) -M $(HOSTCPPFLAGS) -MQ $(obj)$$g $$f >> $@.tmp.$$PPID ; \
+ 	done
++	@mv -f $@.tmp.$$PPID $@
+ 
+ MAKE_DEPEND = $(CC) -M $(CPPFLAGS) $(EXTRA_CPPFLAGS_DEP) \
+ 		-MQ $(addsuffix .o,$(obj)$(basename $<)) $< >$@

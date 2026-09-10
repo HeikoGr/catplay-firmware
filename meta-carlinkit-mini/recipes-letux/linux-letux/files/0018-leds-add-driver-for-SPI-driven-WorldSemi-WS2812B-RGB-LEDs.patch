@@ -1,4 +1,6 @@
 Subject: [PATCH] leds: add driver for SPI driven WorldSemi WS2812B RGB LEDs
+Upstream-Status: Pending
+
 
 This patch adds support for driving a chain of WS2812B LED chips
 using SPI bus.

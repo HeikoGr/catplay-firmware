@@ -9,7 +9,7 @@ DEPENDS += "libtommath"
 
 do_configure () {
 	${MAKE} -C wpa_supplicant clean
-	cat ${WORKDIR}/defconfig > wpa_supplicant/.config
+	cat ${UNPACKDIR}/defconfig > wpa_supplicant/.config
 
 	# if ${@ bb.utils.contains('PACKAGECONFIG', 'openssl', 'true', 'false', d) }; then
 	# 	echo 'CONFIG_TLS=openssl' >>wpa_supplicant/.config

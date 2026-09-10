@@ -13,7 +13,7 @@ SRC_URI = " \
 
 SRCREV = "b2541e247f88e84873041cad9d2605aa4202d352"
 
-S = "${WORKDIR}/git/bcmdhd.101.10.591.x"
+S = "${UNPACKDIR}/${BP}/bcmdhd.101.10.591.x"
 B = "${WORKDIR}/build"
 
 inherit module

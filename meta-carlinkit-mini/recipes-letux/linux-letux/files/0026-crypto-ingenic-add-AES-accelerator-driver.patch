@@ -1,4 +1,6 @@
 Subject: [PATCH] crypto: ingenic: add AES accelerator driver
+Upstream-Status: Pending
+
 
 diff --git a/crypto/Kconfig b/crypto/Kconfig
 index a997e9793..d179c9437 100644

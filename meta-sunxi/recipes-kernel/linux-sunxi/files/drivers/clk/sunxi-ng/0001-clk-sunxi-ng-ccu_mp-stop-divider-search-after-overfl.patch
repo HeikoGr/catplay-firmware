@@ -1,0 +1,48 @@
+Date: Wed, 12 Aug 2026 10:08:58 +0200
+Subject: [PATCH] clk: sunxi-ng: ccu_mp: stop divider search after overflow
+
+Upstream-Status: Pending
+---
+ drivers/clk/sunxi-ng/ccu_mp.c | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/clk/sunxi-ng/ccu_mp.c b/drivers/clk/sunxi-ng/ccu_mp.c
+index 7cdb0eedc69b..eca5a3cd1190 100644
+--- a/drivers/clk/sunxi-ng/ccu_mp.c
++++ b/drivers/clk/sunxi-ng/ccu_mp.c
+@@ -26,7 +26,7 @@ static unsigned long ccu_mp_find_best(unsigned long parent, unsigned long rate,
+ 	unsigned int best_m = 0, best_p = 0;
+ 	unsigned int _m, _p;
+ 
+-	for (_p = 1; _p <= max_p; _p = next_div(_p, shift)) {
++	for (_p = 1; _p && _p <= max_p; _p = next_div(_p, shift)) {
+ 		for (_m = 1; _m <= max_m; _m++) {
+ 			unsigned long tmp_rate = parent / _p / _m;
+ 
+@@ -69,7 +69,7 @@ static unsigned long ccu_mp_find_best_with_parent_adj(struct clk_hw *hw,
+ 	maxdiv = max_m * max_p;
+ 	maxdiv = min(ULONG_MAX / rate, maxdiv);
+ 
+-	for (_p = 1; _p <= max_p; _p = next_div(_p, shift)) {
++	for (_p = 1; _p && _p <= max_p; _p = next_div(_p, shift)) {
+ 		for (_m = 1; _m <= max_m; _m++) {
+ 			div = _m * _p;
+ 
+@@ -120,7 +120,7 @@ static int ccu_mp_determine_rate_helper(struct ccu_mux_internal *mux,
+ 
+ 	max_m = cmp->m.max ?: 1 << cmp->m.width;
+ 	if (shift)
+-		max_p = cmp->p.max ?: 1 << ((1 << cmp->p.width) - 1);
++		max_p = cmp->p.max ?: 1U << ((1U << cmp->p.width) - 1);
+ 	else
+ 		max_p = cmp->p.max ?: 1 << cmp->p.width;
+ 
+@@ -223,7 +223,7 @@ static int ccu_mp_set_rate(struct clk_hw *hw, unsigned long rate,
+ 
+ 	max_m = cmp->m.max ?: 1 << cmp->m.width;
+ 	if (shift)
+-		max_p = cmp->p.max ?: 1 << ((1 << cmp->p.width) - 1);
++		max_p = cmp->p.max ?: 1U << ((1U << cmp->p.width) - 1);
+ 	else
+ 		max_p = cmp->p.max ?: 1 << cmp->p.width;
+ 

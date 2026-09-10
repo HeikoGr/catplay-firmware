@@ -7,8 +7,6 @@ SRC_URI = "git://github.com/radxa/rtkbt.git;protocol=https;branch=main"
 
 SRCREV = "72ef9b75374fdde945e0a19f6aba68e13d4d426d"
 
-S = "${WORKDIR}/git"
-
 FILES:${PN} = " \
     /lib/firmware/rtl_bt/rtl8723fs_fw.bin \
     /lib/firmware/rtl_bt/rtl8723fs_config.bin \

@@ -1,4 +1,6 @@
 Subject: [PATCH] mips: x1600: add AES clock references
+Upstream-Status: Pending
+
 
 diff --git a/arch/mips/boot/dts/ingenic/x1600.dtsi b/arch/mips/boot/dts/ingenic/x1600.dtsi
 index af4bc2166..be361b3df 100644

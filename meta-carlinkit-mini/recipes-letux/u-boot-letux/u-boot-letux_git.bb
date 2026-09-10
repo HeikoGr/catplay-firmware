@@ -8,9 +8,9 @@ LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/GPL-2.0-only;md5=801f80980d171d
 
 SRC_URI = "git://github.com/goldelico/letux-uboot.git;branch=${LETUX_BRANCH};protocol=https"
 
-inherit autotools deploy
-
-S = "${WORKDIR}/git"
+# U-Boot is configured per board by do_compile below; it is not an Autotools
+# project and has no configure script.
+inherit deploy
 
 LETUX_UBOOT_BOARDS ?= ""
 LETUX_UBOOT_BUILD_TARGETS = "spl/u-boot-spl.bin"

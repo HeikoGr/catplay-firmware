@@ -12,4 +12,4 @@ EXTRA_OEMAKE += "-C ${STAGING_KERNEL_DIR} M=${S} KCFLAGS=-O2"
 
 FILESEXTRAPATHS:prepend := "${THISDIR}/src:"
 
-S = "${WORKDIR}/usb/catplay_iap2_usb_host/g_iphone"
+S = "${UNPACKDIR}/usb/catplay_iap2_usb_host/g_iphone"

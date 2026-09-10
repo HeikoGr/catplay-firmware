@@ -1,6 +1,8 @@
 Date: Sat, 5 Jul 2025 22:56:22 +0200
 Subject: [PATCH 2/2] Change -Os to more aggressive -Oz for CONFIG_CC_OPTIMIZE_FOR_SIZE
 
+Upstream-Status: Inappropriate [C2A size optimization]
+
 ---
  Makefile | 2 +-
  1 file changed, 1 insertion(+), 1 deletion(-)
@@ -20,4 +22,3 @@ index b58a061cb..6086cdccb 100644
  
 -- 
 2.50.0
-

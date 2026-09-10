@@ -1,0 +1,824 @@
+Date: Thu, 6 Aug 2026 12:36:37 +0200
+Subject: [PATCH 03/21] spi: add sunxi SPIF controller support
+
+Upstream-Status: Pending
+
+Keep the controller clocks gated while it is idle. Enable them for each
+SPI memory request, then mask and drain interrupts and synchronize the IRQ
+before disabling the clocks. Briefly enable the clocks for sysfs updates
+which access controller registers as well.
+---
+ drivers/spi/Kconfig          |   9 +
+ drivers/spi/Makefile         |   1 +
+ drivers/spi/spi-sunxi-spif.c | 770 ++++++++++++++++++++++++++++++++++++
+ 3 files changed, 780 insertions(+)
+ create mode 100644 drivers/spi/spi-sunxi-spif.c
+
+diff --git a/drivers/spi/Kconfig b/drivers/spi/Kconfig
+index 8782514bb89b..c3badeb456c0 100644
+--- a/drivers/spi/Kconfig
++++ b/drivers/spi/Kconfig
+@@ -1158,6 +1158,15 @@ config SPI_SUN6I
+ 	help
+ 	  This enables using the SPI controller on the Allwinner A31 SoCs.
+ 
++config SPI_SUNXI_SPIF
++	tristate "Allwinner sunxi SPI flash controller"
++	depends on ARCH_SUNXI || COMPILE_TEST
++	depends on SPI_MEM
++	help
++	  This enables the dedicated SPI flash controller found in newer
++	  Allwinner SoCs, including the sun300i V821. The controller uses its
++	  own descriptor engine and does not require DMAengine.
++
+ config SPI_SUNPLUS_SP7021
+ 	tristate "Sunplus SP7021 SPI controller"
+ 	depends on SOC_SP7021 || COMPILE_TEST
+diff --git a/drivers/spi/Makefile b/drivers/spi/Makefile
+index 9fa12498ce8c..11eafe04e72f 100644
+--- a/drivers/spi/Makefile
++++ b/drivers/spi/Makefile
+@@ -152,6 +152,7 @@ obj-$(CONFIG_SPI_STM32_QSPI) 		+= spi-stm32-qspi.o
+ obj-$(CONFIG_SPI_ST_SSC4)		+= spi-st-ssc4.o
+ obj-$(CONFIG_SPI_SUN4I)			+= spi-sun4i.o
+ obj-$(CONFIG_SPI_SUN6I)			+= spi-sun6i.o
++obj-$(CONFIG_SPI_SUNXI_SPIF)		+= spi-sunxi-spif.o
+ obj-$(CONFIG_SPI_SUNPLUS_SP7021)	+= spi-sunplus-sp7021.o
+ obj-$(CONFIG_SPI_SYNQUACER)		+= spi-synquacer.o
+ obj-$(CONFIG_SPI_TEGRA210_QUAD)		+= spi-tegra210-quad.o
+diff --git a/drivers/spi/spi-sunxi-spif.c b/drivers/spi/spi-sunxi-spif.c
+new file mode 100644
+index 000000000000..127efa738bb5
+--- /dev/null
++++ b/drivers/spi/spi-sunxi-spif.c
+@@ -0,0 +1,770 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++/*
++ * Allwinner dedicated SPI flash controller
++ *
++ * The controller fetches a private transfer descriptor directly from memory.
++ * This is not a DMAengine client.
++ */
++
++#include <linux/bitfield.h>
++#include <linux/clk.h>
++#include <linux/completion.h>
++#include <linux/dma-mapping.h>
++#include <linux/interrupt.h>
++#include <linux/iopoll.h>
++#include <linux/jiffies.h>
++#include <linux/module.h>
++#include <linux/mutex.h>
++#include <linux/mtd/spi-nor.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/property.h>
++#include <linux/reset.h>
++#include <linux/scatterlist.h>
++#include <linux/spi/spi.h>
++#include <linux/spi/spi-mem.h>
++
++#define SPIF_GC_REG			0x04
++#define SPIF_VER_REG			0x00
++#define SPIF_GCA_REG			0x08
++#define SPIF_TC_REG			0x0c
++#define SPIF_INT_EN_REG			0x14
++#define SPIF_INT_STA_REG		0x18
++#define SPIF_CSD_REG			0x1c
++#define SPIF_PHC_REG			0x20
++#define SPIF_TCF_REG			0x24
++#define SPIF_TCS_REG			0x28
++#define SPIF_TNM_REG			0x2c
++#define SPIF_DMA_CTL_REG		0x40
++#define SPIF_DSC_REG			0x44
++#define SPIF_CFT_REG			0x4c
++#define SPIF_CFS_REG			0x50
++
++#define SPIF_CFT_CDC			0x64106410
++#define SPIF_CSDA			5
++#define SPIF_CSEOT			6
++#define SPIF_CSSOT			6
++#define SPIF_CSD_DEF			((SPIF_CSDA << 16) | \
++					 (SPIF_CSEOT << 8) | SPIF_CSSOT)
++
++#define SPIF_TC_SAMP_MODE_EN		BIT(20)
++#define SPIF_TC_SAMP_DL_SW_EN		BIT(6)
++#define SPIF_TC_SAMP_MODE		GENMASK(18, 16)
++#define SPIF_TC_SAMP_DELAY		GENMASK(5, 0)
++
++#define SPIF_GC_CFG_MODE		BIT(0)
++#define SPIF_GC_NMODE_EN		BIT(2)
++#define SPIF_GC_CS_POL			BIT(8)
++#define SPIF_GC_HOLD_EN			BIT(13)
++#define SPIF_GC_WP_EN			BIT(15)
++#define SPIF_GC_DTR_EN			BIT(16)
++#define SPIF_GC_MODE_MASK		GENMASK(5, 4)
++
++#define SPIF_GCA_RF_RST			BIT(0)
++#define SPIF_GCA_WF_RST			BIT(1)
++#define SPIF_GCA_RESET			BIT(3)
++
++#define SPIF_INT_RF_OVF			BIT(8)
++#define SPIF_INT_RF_UDF			BIT(9)
++#define SPIF_INT_WF_OVF			BIT(10)
++#define SPIF_INT_DMA_DONE		BIT(24)
++#define SPIF_INT_ERRORS			(SPIF_INT_RF_OVF | SPIF_INT_RF_UDF | \
++					 SPIF_INT_WF_OVF)
++
++#define SPIF_PHASE_RX			BIT(8)
++#define SPIF_PHASE_TX			BIT(12)
++#define SPIF_PHASE_DUMMY		BIT(16)
++#define SPIF_PHASE_ADDR			BIT(24)
++#define SPIF_PHASE_CMD			BIT(28)
++
++#define SPIF_TCS_DATA_WIDTH		GENMASK(1, 0)
++#define SPIF_TCS_ADDR_WIDTH		GENMASK(5, 4)
++#define SPIF_TCS_CMD_WIDTH		GENMASK(9, 8)
++#define SPIF_TCS_CMD_OPCODE		GENMASK(31, 24)
++
++#define SPIF_TNM_DATA_COUNT		GENMASK(15, 0)
++#define SPIF_TNM_DUMMY_COUNT		GENMASK(23, 16)
++#define SPIF_TNM_ADDR_SIZE		GENMASK(25, 24)
++#define SPIF_TNM_DESC_NORMAL		BIT(28)
++
++#define SPIF_DMA_START			BIT(0)
++#define SPIF_DMA_DESC_LEN		GENMASK(11, 4)
++
++#define SPIF_DESC_LAST			BIT(0)
++#define SPIF_DESC_WRITE_TO_RAM		BIT(1)
++#define SPIF_DESC_BURST_INCR16		FIELD_PREP(GENMASK(6, 4), 7)
++#define SPIF_DESC_BLOCK_64B		FIELD_PREP(GENMASK(31, 24), 3)
++#define SPIF_DESC_DATA_LEN		GENMASK(16, 0)
++
++#define SPIF_MAX_DATA			4096
++#define SPIF_MIN_READ			8
++#define SPIF_DEFAULT_MAX_FREQUENCY	25000000
++#define SPIF_TIMEOUT_US			1000000
++
++struct sunxi_spif_desc {
++	u32 control;
++	u32 data_len;
++	u32 data_addr;
++	u32 next_desc;
++	u32 phase;
++	u32 flash_addr;
++	u32 command;
++	u32 count;
++};
++
++struct sunxi_spif {
++	struct device *dev;
++	void __iomem *base;
++	struct clk *parent_clk;
++	struct clk *mod_clk;
++	struct clk *bus_clk;
++	struct reset_control *reset;
++	struct sunxi_spif_desc *desc;
++	dma_addr_t desc_dma;
++	void *buffer;
++	dma_addr_t buffer_dma;
++	struct completion done;
++	int irq;
++	u32 status;
++	u32 sample_mode;
++	u32 sample_delay;
++	u32 max_frequency;
++	bool sample_configured;
++	struct mutex lock;
++};
++
++static void sunxi_spif_disable_clocks(struct sunxi_spif *spif)
++{
++	clk_disable_unprepare(spif->bus_clk);
++	clk_disable_unprepare(spif->mod_clk);
++	clk_disable_unprepare(spif->parent_clk);
++}
++
++static int sunxi_spif_enable_clocks(struct sunxi_spif *spif)
++{
++	int ret;
++
++	ret = clk_prepare_enable(spif->parent_clk);
++	if (ret)
++		return ret;
++	ret = clk_prepare_enable(spif->mod_clk);
++	if (ret)
++		goto err_disable_parent;
++	ret = clk_prepare_enable(spif->bus_clk);
++	if (ret)
++		goto err_disable_mod;
++
++	return 0;
++
++err_disable_mod:
++	clk_disable_unprepare(spif->mod_clk);
++err_disable_parent:
++	clk_disable_unprepare(spif->parent_clk);
++	return ret;
++}
++
++static void sunxi_spif_mask_and_clear_irqs(struct sunxi_spif *spif)
++{
++	writel(0, spif->base + SPIF_INT_EN_REG);
++	readl(spif->base + SPIF_INT_EN_REG);
++	writel(SPIF_INT_DMA_DONE | SPIF_INT_ERRORS,
++	       spif->base + SPIF_INT_STA_REG);
++	readl(spif->base + SPIF_INT_STA_REG);
++}
++
++static int sunxi_spif_width(unsigned int width)
++{
++	switch (width) {
++	case 1:
++		return 0;
++	case 2:
++		return 1;
++	case 4:
++		return 2;
++	case 8:
++		return 3;
++	default:
++		return -EINVAL;
++	}
++}
++
++static bool sunxi_spif_supports_op(struct spi_mem *mem,
++				   const struct spi_mem_op *op)
++{
++	if (!spi_mem_default_supports_op(mem, op))
++		return false;
++	if (op->cmd.dtr || op->addr.dtr || op->dummy.dtr || op->data.dtr)
++		return false;
++	if (op->cmd.buswidth != 1 ||
++	    (op->addr.nbytes && sunxi_spif_width(op->addr.buswidth) < 0) ||
++	    (op->dummy.nbytes && sunxi_spif_width(op->dummy.buswidth) < 0) ||
++	    (op->data.nbytes && sunxi_spif_width(op->data.buswidth) < 0))
++		return false;
++
++	/* Only 0xeb uses a multi-I/O address and dummy phase in SDR mode. */
++	if ((op->addr.nbytes && op->addr.buswidth != 1) ||
++	    (op->dummy.nbytes && op->dummy.buswidth != 1))
++		return op->cmd.opcode == SPINOR_OP_READ_1_4_4 &&
++		       op->addr.buswidth == 4 &&
++		       (!op->dummy.nbytes || op->dummy.buswidth == 4) &&
++		       op->data.dir == SPI_MEM_DATA_IN &&
++		       op->data.buswidth == 4;
++	return op->addr.nbytes <= 4 && op->dummy.nbytes <= 0xff;
++}
++
++static irqreturn_t sunxi_spif_irq(int irq, void *dev_id)
++{
++	struct sunxi_spif *spif = dev_id;
++	u32 status;
++
++	status = readl(spif->base + SPIF_INT_STA_REG);
++	if (!(status & (SPIF_INT_DMA_DONE | SPIF_INT_ERRORS)))
++		return IRQ_NONE;
++
++	writel(status, spif->base + SPIF_INT_STA_REG);
++	spif->status = status;
++	complete(&spif->done);
++
++	return IRQ_HANDLED;
++}
++
++static int sunxi_spif_adjust_op_size(struct spi_mem *mem,
++				     struct spi_mem_op *op)
++{
++	if (op->data.nbytes > SPIF_MAX_DATA)
++		op->data.nbytes = SPIF_MAX_DATA;
++	return 0;
++}
++
++static bool sunxi_spif_can_dma_direct(const struct spi_mem_op *op)
++{
++	const void *buf;
++
++	if (op->data.nbytes < SPIF_MIN_READ)
++		return false;
++
++	buf = op->data.dir == SPI_MEM_DATA_IN ? op->data.buf.in :
++						     op->data.buf.out;
++
++	return IS_ALIGNED((unsigned long)buf, sizeof(u32));
++}
++
++static void sunxi_spif_build_desc(struct sunxi_spif *spif,
++				  const struct spi_mem_op *op,
++				  dma_addr_t data_dma)
++{
++	struct sunxi_spif_desc *desc = spif->desc;
++	size_t data_len = op->data.nbytes;
++	int cmd_width = sunxi_spif_width(op->cmd.buswidth);
++	unsigned int dummy_cycles;
++	u32 command;
++
++	memset(desc, 0, sizeof(*desc));
++	desc->control = SPIF_DESC_LAST | SPIF_DESC_BURST_INCR16;
++	desc->data_len = SPIF_DESC_BLOCK_64B;
++	desc->phase = SPIF_PHASE_CMD;
++	desc->command = FIELD_PREP(SPIF_TCS_CMD_OPCODE, op->cmd.opcode) |
++		FIELD_PREP(SPIF_TCS_CMD_WIDTH, cmd_width);
++	desc->count = SPIF_TNM_DESC_NORMAL;
++
++	if (op->addr.nbytes) {
++		desc->phase |= SPIF_PHASE_ADDR;
++		desc->flash_addr = op->addr.val;
++		desc->command |= FIELD_PREP(SPIF_TCS_ADDR_WIDTH,
++					    sunxi_spif_width(op->addr.buswidth));
++		desc->count |= FIELD_PREP(SPIF_TNM_ADDR_SIZE,
++					  op->addr.nbytes - 1);
++	}
++	if (op->dummy.nbytes) {
++		dummy_cycles = op->dummy.nbytes * 8 / op->dummy.buswidth;
++
++		desc->phase |= SPIF_PHASE_DUMMY;
++		desc->count |= FIELD_PREP(SPIF_TNM_DUMMY_COUNT,
++					  dummy_cycles);
++	}
++	if (!op->data.nbytes)
++		return;
++	if (op->data.dir == SPI_MEM_DATA_IN)
++		data_len = max_t(size_t, data_len, SPIF_MIN_READ);
++
++	command = FIELD_PREP(SPIF_TCS_DATA_WIDTH,
++			     sunxi_spif_width(op->data.buswidth));
++	desc->command |= command;
++	desc->data_len |= FIELD_PREP(SPIF_DESC_DATA_LEN, data_len);
++	desc->data_addr = data_dma >> 2;
++	desc->count |= FIELD_PREP(SPIF_TNM_DATA_COUNT, data_len);
++	if (op->data.dir == SPI_MEM_DATA_IN) {
++		desc->control |= SPIF_DESC_WRITE_TO_RAM;
++		desc->phase |= SPIF_PHASE_RX;
++	} else {
++		desc->phase |= SPIF_PHASE_TX;
++	}
++}
++
++static int sunxi_spif_exec_op(struct spi_mem *mem,
++			      const struct spi_mem_op *op)
++{
++	struct spi_controller *ctlr = mem->spi->controller;
++	struct sunxi_spif *spif = spi_controller_get_devdata(ctlr);
++	struct sg_table sgt;
++	dma_addr_t data_dma = spif->buffer_dma;
++	bool direct_dma = false;
++	u32 status, val;
++	int ret;
++
++	dev_dbg(spif->dev,
++		"op cmd=%#04x cmd_bw=%u addr=%#llx addr_n=%u addr_bw=%u "
++		"dummy_n=%u dummy_bw=%u data_n=%u data_bw=%u dir=%s\n",
++		op->cmd.opcode,
++		op->cmd.buswidth,
++		(unsigned long long)op->addr.val,
++		op->addr.nbytes,
++		op->addr.buswidth,
++		op->dummy.nbytes,
++		op->dummy.buswidth,
++		op->data.nbytes,
++		op->data.buswidth,
++		op->data.dir == SPI_MEM_DATA_IN ? "in" :
++		op->data.dir == SPI_MEM_DATA_OUT ? "out" : "none");
++
++	mutex_lock(&spif->lock);
++	ret = sunxi_spif_enable_clocks(spif);
++	if (ret)
++		goto out_unlock;
++	if (op->data.nbytes) {
++		if (sunxi_spif_can_dma_direct(op)) {
++			ret = spi_controller_dma_map_mem_op_data(ctlr, op, &sgt);
++			if (!ret) {
++				data_dma = sg_dma_address(sgt.sgl);
++				if (sgt.nents == 1 &&
++				    sg_dma_len(sgt.sgl) >= op->data.nbytes &&
++				    IS_ALIGNED(data_dma, sizeof(u32))) {
++					direct_dma = true;
++				} else {
++					spi_controller_dma_unmap_mem_op_data(ctlr, op,
++									     &sgt);
++				}
++			}
++		}
++
++		if (!direct_dma) {
++			data_dma = spif->buffer_dma;
++			if (op->data.dir == SPI_MEM_DATA_OUT)
++				memcpy(spif->buffer, op->data.buf.out,
++				       op->data.nbytes);
++		}
++	}
++	sunxi_spif_build_desc(spif, op, data_dma);
++	writel(SPIF_GCA_RF_RST | SPIF_GCA_WF_RST,
++	       spif->base + SPIF_GCA_REG);
++
++	if (!op->data.nbytes) {
++		val = readl(spif->base + SPIF_GC_REG) & ~SPIF_GC_CFG_MODE;
++		writel(val, spif->base + SPIF_GC_REG);
++		writel(spif->desc->phase, spif->base + SPIF_PHC_REG);
++		writel(spif->desc->flash_addr, spif->base + SPIF_TCF_REG);
++		writel(spif->desc->command, spif->base + SPIF_TCS_REG);
++		writel(spif->desc->count, spif->base + SPIF_TNM_REG);
++		writel(val | SPIF_GC_NMODE_EN, spif->base + SPIF_GC_REG);
++		ret = readl_poll_timeout(spif->base + SPIF_GC_REG, val,
++					 !(val & SPIF_GC_NMODE_EN), 1,
++					 SPIF_TIMEOUT_US);
++		goto out_disable_clocks;
++	}
++
++	sunxi_spif_mask_and_clear_irqs(spif);
++	reinit_completion(&spif->done);
++	spif->status = 0;
++	writel(SPIF_INT_DMA_DONE | SPIF_INT_ERRORS,
++	       spif->base + SPIF_INT_EN_REG);
++	val = readl(spif->base + SPIF_GC_REG) | SPIF_GC_CFG_MODE;
++	writel(val, spif->base + SPIF_GC_REG);
++	dma_wmb();
++	writel(spif->desc_dma >> 2, spif->base + SPIF_DSC_REG);
++	writel(FIELD_PREP(SPIF_DMA_DESC_LEN, sizeof(*spif->desc)) |
++	       SPIF_DMA_START, spif->base + SPIF_DMA_CTL_REG);
++
++	if (op->data.dir == SPI_MEM_DATA_OUT) {
++		ret = readl_poll_timeout(spif->base + SPIF_GC_REG, val,
++					 !(val & SPIF_GC_NMODE_EN), 1,
++					 SPIF_TIMEOUT_US);
++		if (ret)
++			goto out_unmap;
++	}
++
++	ret = wait_for_completion_timeout(&spif->done,
++					  usecs_to_jiffies(SPIF_TIMEOUT_US));
++	status = spif->status;
++	writel(0, spif->base + SPIF_INT_EN_REG);
++	if (!ret) {
++		dev_err(&mem->spi->dev,
++			"transfer timeout: ver=%08x gc=%08x gca=%08x int=%08x dma=%08x dsc=%08x active=%08x/%08x/%08x/%08x cfs=%08x desc=%08x/%08x/%08x/%08x/%08x/%08x/%08x/%08x\n",
++			readl(spif->base + SPIF_VER_REG),
++			readl(spif->base + SPIF_GC_REG),
++			readl(spif->base + SPIF_GCA_REG), status,
++			readl(spif->base + SPIF_DMA_CTL_REG),
++			readl(spif->base + SPIF_DSC_REG),
++			readl(spif->base + SPIF_PHC_REG),
++			readl(spif->base + SPIF_TCF_REG),
++			readl(spif->base + SPIF_TCS_REG),
++			readl(spif->base + SPIF_TNM_REG),
++			readl(spif->base + SPIF_CFS_REG),
++			spif->desc->control, spif->desc->data_len,
++			spif->desc->data_addr, spif->desc->next_desc,
++			spif->desc->phase, spif->desc->flash_addr,
++			spif->desc->command, spif->desc->count);
++		ret = -ETIMEDOUT;
++		goto out_unmap;
++	}
++	if (status & SPIF_INT_ERRORS) {
++		ret = -EIO;
++		goto out_unmap;
++	}
++	if (op->data.dir == SPI_MEM_DATA_IN && !direct_dma) {
++		dma_rmb();
++		memcpy(op->data.buf.in, spif->buffer, op->data.nbytes);
++	}
++
++	ret = 0;
++
++out_unmap:
++	if (direct_dma)
++		spi_controller_dma_unmap_mem_op_data(ctlr, op, &sgt);
++out_disable_clocks:
++	sunxi_spif_mask_and_clear_irqs(spif);
++	synchronize_irq(spif->irq);
++	sunxi_spif_disable_clocks(spif);
++out_unlock:
++	mutex_unlock(&spif->lock);
++	return ret;
++}
++
++static const struct spi_controller_mem_ops sunxi_spif_mem_ops = {
++	.supports_op = sunxi_spif_supports_op,
++	.adjust_op_size = sunxi_spif_adjust_op_size,
++	.exec_op = sunxi_spif_exec_op,
++};
++
++static void sunxi_spif_config_sample_delay(struct sunxi_spif *spif)
++{
++	u32 val;
++
++	val = readl(spif->base + SPIF_TC_REG);
++	val &= ~(SPIF_TC_SAMP_MODE_EN | SPIF_TC_SAMP_DL_SW_EN |
++		 SPIF_TC_SAMP_MODE | SPIF_TC_SAMP_DELAY);
++	if (spif->sample_configured) {
++		val |= SPIF_TC_SAMP_MODE_EN | SPIF_TC_SAMP_DL_SW_EN;
++		val |= FIELD_PREP(SPIF_TC_SAMP_MODE, spif->sample_mode);
++		val |= FIELD_PREP(SPIF_TC_SAMP_DELAY, spif->sample_delay);
++	}
++	writel(val, spif->base + SPIF_TC_REG);
++}
++
++static ssize_t sample_mode_show(struct device *dev,
++				struct device_attribute *attr, char *buf)
++{
++	struct spi_controller *ctlr = dev_get_drvdata(dev);
++	struct sunxi_spif *spif = spi_controller_get_devdata(ctlr);
++
++	return sysfs_emit(buf, "%u\n", spif->sample_mode);
++}
++
++static ssize_t sample_mode_store(struct device *dev,
++				 struct device_attribute *attr,
++				 const char *buf, size_t count)
++{
++	struct spi_controller *ctlr = dev_get_drvdata(dev);
++	struct sunxi_spif *spif = spi_controller_get_devdata(ctlr);
++	u32 value;
++	int ret;
++
++	ret = kstrtou32(buf, 0, &value);
++	if (ret)
++		return ret;
++	if (value > FIELD_MAX(SPIF_TC_SAMP_MODE))
++		return -ERANGE;
++
++	mutex_lock(&spif->lock);
++	ret = sunxi_spif_enable_clocks(spif);
++	if (ret)
++		goto out_unlock;
++	spif->sample_mode = value;
++	spif->sample_configured = true;
++	sunxi_spif_config_sample_delay(spif);
++	sunxi_spif_disable_clocks(spif);
++out_unlock:
++	mutex_unlock(&spif->lock);
++	if (ret)
++		return ret;
++
++	return count;
++}
++static DEVICE_ATTR_RW(sample_mode);
++
++static ssize_t sample_delay_show(struct device *dev,
++				 struct device_attribute *attr, char *buf)
++{
++	struct spi_controller *ctlr = dev_get_drvdata(dev);
++	struct sunxi_spif *spif = spi_controller_get_devdata(ctlr);
++
++	return sysfs_emit(buf, "%u\n", spif->sample_delay);
++}
++
++static ssize_t sample_delay_store(struct device *dev,
++				  struct device_attribute *attr,
++				  const char *buf, size_t count)
++{
++	struct spi_controller *ctlr = dev_get_drvdata(dev);
++	struct sunxi_spif *spif = spi_controller_get_devdata(ctlr);
++	u32 value;
++	int ret;
++
++	ret = kstrtou32(buf, 0, &value);
++	if (ret)
++		return ret;
++	if (value > FIELD_MAX(SPIF_TC_SAMP_DELAY))
++		return -ERANGE;
++
++	mutex_lock(&spif->lock);
++	ret = sunxi_spif_enable_clocks(spif);
++	if (ret)
++		goto out_unlock;
++	spif->sample_delay = value;
++	spif->sample_configured = true;
++	sunxi_spif_config_sample_delay(spif);
++	sunxi_spif_disable_clocks(spif);
++out_unlock:
++	mutex_unlock(&spif->lock);
++	if (ret)
++		return ret;
++
++	return count;
++}
++static DEVICE_ATTR_RW(sample_delay);
++
++static ssize_t clock_rate_show(struct device *dev,
++			       struct device_attribute *attr, char *buf)
++{
++	struct spi_controller *ctlr = dev_get_drvdata(dev);
++	struct sunxi_spif *spif = spi_controller_get_devdata(ctlr);
++
++	return sysfs_emit(buf, "%lu\n", clk_get_rate(spif->mod_clk));
++}
++
++static ssize_t clock_rate_store(struct device *dev,
++				struct device_attribute *attr,
++				const char *buf, size_t count)
++{
++	struct spi_controller *ctlr = dev_get_drvdata(dev);
++	struct sunxi_spif *spif = spi_controller_get_devdata(ctlr);
++	unsigned long rate;
++	int ret;
++
++	ret = kstrtoul(buf, 0, &rate);
++	if (ret)
++		return ret;
++	if (!rate)
++		return -EINVAL;
++
++	mutex_lock(&spif->lock);
++	ret = clk_set_rate(spif->mod_clk, rate);
++	mutex_unlock(&spif->lock);
++	if (ret)
++		return ret;
++
++	return count;
++}
++static DEVICE_ATTR_RW(clock_rate);
++
++static struct attribute *sunxi_spif_attrs[] = {
++	&dev_attr_clock_rate.attr,
++	&dev_attr_sample_mode.attr,
++	&dev_attr_sample_delay.attr,
++	NULL,
++};
++ATTRIBUTE_GROUPS(sunxi_spif);
++
++static int sunxi_spif_hw_init(struct sunxi_spif *spif)
++{
++	unsigned long rate;
++	u32 max_frequency = spif->max_frequency;
++	u32 val;
++	int ret;
++
++	if (!max_frequency)
++		max_frequency = SPIF_DEFAULT_MAX_FREQUENCY;
++
++	ret = reset_control_reset(spif->reset);
++	if (ret)
++		return ret;
++	ret = clk_prepare_enable(spif->parent_clk);
++	if (ret)
++		return ret;
++	ret = clk_set_parent(spif->mod_clk, spif->parent_clk);
++	if (ret) {
++		clk_disable_unprepare(spif->parent_clk);
++		return ret;
++	}
++	rate = clk_round_rate(spif->mod_clk, max_frequency);
++	ret = clk_set_rate(spif->mod_clk, rate);
++	if (ret)
++		goto err_disable_parent;
++	ret = clk_prepare_enable(spif->mod_clk);
++	if (ret)
++		goto err_disable_parent;
++	ret = clk_prepare_enable(spif->bus_clk);
++	if (ret)
++		goto err_disable_mod;
++
++	writel(SPIF_GCA_RESET, spif->base + SPIF_GCA_REG);
++	ret = readl_poll_timeout(spif->base + SPIF_GCA_REG, val,
++				 !(val & SPIF_GCA_RESET), 1, SPIF_TIMEOUT_US);
++	if (ret) {
++		sunxi_spif_disable_clocks(spif);
++		return ret;
++	}
++	writel(SPIF_GCA_RF_RST | SPIF_GCA_WF_RST,
++	       spif->base + SPIF_GCA_REG);
++	val = readl(spif->base + SPIF_GC_REG);
++	val &= ~(SPIF_GC_WP_EN | SPIF_GC_HOLD_EN | SPIF_GC_DTR_EN |
++		 SPIF_GC_MODE_MASK);
++	val |= SPIF_GC_CS_POL;
++	writel(val, spif->base + SPIF_GC_REG);
++
++	writel(SPIF_CSD_DEF, spif->base + SPIF_CSD_REG);
++	writel(SPIF_CFT_CDC, spif->base + SPIF_CFT_REG);
++	sunxi_spif_config_sample_delay(spif);
++	sunxi_spif_mask_and_clear_irqs(spif);
++	sunxi_spif_disable_clocks(spif);
++
++	return 0;
++
++err_disable_mod:
++	clk_disable_unprepare(spif->mod_clk);
++err_disable_parent:
++	clk_disable_unprepare(spif->parent_clk);
++	return ret;
++}
++
++static int sunxi_spif_probe(struct platform_device *pdev)
++{
++	struct device_node *child;
++	struct spi_controller *ctlr;
++	struct sunxi_spif *spif;
++	int ret;
++
++	ctlr = devm_spi_alloc_host(&pdev->dev, sizeof(*spif));
++	if (!ctlr)
++		return -ENOMEM;
++	platform_set_drvdata(pdev, ctlr);
++	spif = spi_controller_get_devdata(ctlr);
++	spif->dev = &pdev->dev;
++	spif->base = devm_platform_ioremap_resource(pdev, 0);
++	if (IS_ERR(spif->base))
++		return PTR_ERR(spif->base);
++	spif->parent_clk = devm_clk_get(&pdev->dev, "pclk");
++	if (IS_ERR(spif->parent_clk))
++		return PTR_ERR(spif->parent_clk);
++	spif->mod_clk = devm_clk_get(&pdev->dev, "mclk");
++	if (IS_ERR(spif->mod_clk))
++		return PTR_ERR(spif->mod_clk);
++	spif->bus_clk = devm_clk_get(&pdev->dev, "bus");
++	if (IS_ERR(spif->bus_clk))
++		return PTR_ERR(spif->bus_clk);
++	spif->reset = devm_reset_control_get_exclusive(&pdev->dev, NULL);
++	if (IS_ERR(spif->reset))
++		return PTR_ERR(spif->reset);
++	spif->irq = platform_get_irq(pdev, 0);
++	if (spif->irq < 0)
++		return spif->irq;
++	spif->max_frequency = SPIF_DEFAULT_MAX_FREQUENCY;
++	for_each_available_child_of_node(pdev->dev.of_node, child) {
++		ret = of_property_read_u32(child, "spi-max-frequency",
++					   &spif->max_frequency);
++		of_node_put(child);
++		if (!ret)
++			break;
++		if (ret != -EINVAL)
++			return ret;
++	}
++	spif->sample_mode = 0;
++	spif->sample_delay = 0;
++	spif->sample_configured = false;
++	ret = device_property_read_u32(&pdev->dev, "allwinner,sample-delay",
++				       &spif->sample_delay);
++	if (!ret)
++		spif->sample_configured = true;
++	else if (ret != -EINVAL)
++		return ret;
++	ret = device_property_read_u32(&pdev->dev, "allwinner,sample-mode",
++				       &spif->sample_mode);
++	if (!ret)
++		spif->sample_configured = true;
++	else if (ret != -EINVAL)
++		return ret;
++	if (spif->sample_delay > FIELD_MAX(SPIF_TC_SAMP_DELAY))
++		return dev_err_probe(&pdev->dev, -EINVAL,
++				     "invalid sample delay\n");
++	if (spif->sample_mode > FIELD_MAX(SPIF_TC_SAMP_MODE))
++		return dev_err_probe(&pdev->dev, -EINVAL,
++				     "invalid sample mode\n");
++	mutex_init(&spif->lock);
++	init_completion(&spif->done);
++	ret = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32));
++	if (ret)
++		return ret;
++
++	spif->desc = dmam_alloc_coherent(&pdev->dev, sizeof(*spif->desc),
++					 &spif->desc_dma, GFP_KERNEL);
++	if (!spif->desc)
++		return -ENOMEM;
++	spif->buffer = dmam_alloc_coherent(&pdev->dev, SPIF_MAX_DATA,
++					   &spif->buffer_dma, GFP_KERNEL);
++	if (!spif->buffer)
++		return -ENOMEM;
++	ret = sunxi_spif_hw_init(spif);
++	if (ret)
++		return dev_err_probe(&pdev->dev, ret,
++				     "failed to initialize controller\n");
++	ret = devm_request_irq(&pdev->dev, spif->irq, sunxi_spif_irq, 0,
++			       dev_name(&pdev->dev), spif);
++	if (ret)
++		return ret;
++
++	ctlr->mem_ops = &sunxi_spif_mem_ops;
++	ctlr->mode_bits = SPI_RX_DUAL | SPI_RX_QUAD |
++			  SPI_TX_DUAL | SPI_TX_QUAD;
++	ctlr->num_chipselect = 1;
++	ctlr->bus_num = -1;
++	ctlr->dev.of_node = pdev->dev.of_node;
++
++	ret = devm_spi_register_controller(&pdev->dev, ctlr);
++	if (ret)
++		return ret;
++
++	dev_info(&pdev->dev,
++		 "dedicated SPI flash controller ready at %lu Hz (parent %lu Hz)\n",
++		 clk_get_rate(spif->mod_clk), clk_get_rate(spif->parent_clk));
++	return 0;
++}
++
++static const struct of_device_id sunxi_spif_of_match[] = {
++	{.compatible = "allwinner,sun55i-a523-spif" },
++	{ .compatible = "allwinner,sun300i-v821-spif" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, sunxi_spif_of_match);
++
++static struct platform_driver sunxi_spif_driver = {
++	.probe = sunxi_spif_probe,
++	.driver = {
++		.name = "sunxi-spif",
++		.of_match_table = sunxi_spif_of_match,
++		.dev_groups = sunxi_spif_groups,
++	},
++};
++module_platform_driver(sunxi_spif_driver);
++
++MODULE_DESCRIPTION("Allwinner dedicated SPI flash controller driver");
++MODULE_AUTHOR("CatPlay");
++MODULE_LICENSE("GPL");

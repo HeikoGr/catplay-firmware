@@ -1,0 +1,31 @@
+Date: Thu, 6 Aug 2026 12:36:57 +0200
+Subject: [PATCH 17/21] mmc: sunxi: add explicit maximum descriptor length
+ quirk
+
+Upstream-Status: Pending
+---
+ drivers/mmc/host/sunxi-mmc.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/mmc/host/sunxi-mmc.c b/drivers/mmc/host/sunxi-mmc.c
+index 588f35034a7e..d0cb9715a28d 100644
+--- a/drivers/mmc/host/sunxi-mmc.c
++++ b/drivers/mmc/host/sunxi-mmc.c
+@@ -245,6 +245,7 @@ struct sunxi_idma_des {
+ struct sunxi_mmc_cfg {
+ 	u32 idma_des_size_bits;
+ 	u32 idma_des_shift;
++	bool max_len_not_represented_by_zero;
+ 	const struct sunxi_mmc_clk_delay *clk_delays;
+ 
+ 	/* does the IP block support autocalibration? */
+@@ -368,7 +369,8 @@ static void sunxi_mmc_init_idma_des(struct sunxi_mmc_host *host,
+ 					     SDXC_IDMAC_DES0_OWN |
+ 					     SDXC_IDMAC_DES0_DIC);
+ 
+-		if (data->sg[i].length == max_len)
++		if (data->sg[i].length == max_len &&
++		    !host->cfg->max_len_not_represented_by_zero)
+ 			pdes[i].buf_size = 0; /* 0 == max_len */
+ 		else
+ 			pdes[i].buf_size = cpu_to_le32(data->sg[i].length);

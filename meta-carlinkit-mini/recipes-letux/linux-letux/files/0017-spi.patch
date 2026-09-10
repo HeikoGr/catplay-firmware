@@ -1,4 +1,6 @@
 Subject: [PATCH] spi: ingenic: allow TX-only transfers without RX wait
+Upstream-Status: Pending
+
 
 In TX-only wiring (no MISO), waiting for RX FIFO non-empty can stall
 transfers. Drop the RX wait in the PIO transfer loop.

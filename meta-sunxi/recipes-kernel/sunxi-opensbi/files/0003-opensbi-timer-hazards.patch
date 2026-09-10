@@ -1,0 +1,57 @@
+Subject: timer: avoid V821 timer hazards
+
+Keep the supervisor timer source aligned with PLMT and update the RV32
+compare register without exposing a transient compare value in the past.
+
+Upstream-Status: Pending
+---
+diff --git a/lib/sbi/sbi_timer.c b/lib/sbi/sbi_timer.c
+--- a/lib/sbi/sbi_timer.c
++++ b/lib/sbi/sbi_timer.c
+@@ -331,11 +331,17 @@
+ {
+ 	if (!dev || timer_dev)
+ 		return;
+ 
+ 	timer_dev = dev;
+-	if (!get_time_val && timer_dev->timer_value)
++
++	/*
++	 * V821's supervisor timer compare is backed by PLMT. Keep the
++	 * timestamp source in the same clock domain as the compare register;
++	 * using rdtime here can otherwise create a mixed timer configuration.
++	 */
++	if (timer_dev->timer_value)
+ 		get_time_val = timer_dev->timer_value;
+ }
+ 
+ int sbi_timer_init(struct sbi_scratch *scratch, bool cold_boot)
+ {
+diff --git a/lib/utils/timer/andes_plmt.c b/lib/utils/timer/andes_plmt.c
+--- a/lib/utils/timer/andes_plmt.c
++++ b/lib/utils/timer/andes_plmt.c
+@@ -57,15 +57,20 @@
+ 
+ 	/* Program PLMT Time Compare */
+ #if __riscv_xlen == 64
+ 	writeq_relaxed(next_event, &plmt.time_cmp[target_hart]);
+ #else
+-	u32 mask = -1UL;
++	void *cmp_lo = (void *)&plmt.time_cmp[target_hart];
++	void *cmp_hi = cmp_lo + 0x04;
+ 
+-	writel_relaxed(next_event & mask, &plmt.time_cmp[target_hart]);
+-	writel_relaxed(next_event >> 32,
+-		       (void *)(&plmt.time_cmp[target_hart]) + 0x04);
++	/*
++	 * Avoid a transient compare value in the past while updating the
++	 * 64-bit comparator from RV32.
++	 */
++	writel_relaxed(-1UL, cmp_lo);
++	writel_relaxed((u32)(next_event >> 32), cmp_hi);
++	writel_relaxed((u32)next_event, cmp_lo);
+ #endif
+ }
+ 
+ static int plmt_warm_timer_init(void)
+ {

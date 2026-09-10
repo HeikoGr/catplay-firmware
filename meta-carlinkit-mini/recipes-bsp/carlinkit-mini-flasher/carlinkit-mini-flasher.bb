@@ -15,7 +15,7 @@ SRC_URI += " \
     file://uploader.py \
 "
 
-S = "${WORKDIR}"
+S = "${UNPACKDIR}"
 
 C2A_FLASHER_FILES = " \
     errors.py \
@@ -32,7 +32,7 @@ do_install() {
     install -d "${D}${datadir}/${PN}"
 
     for f in ${C2A_FLASHER_FILES}; do
-        install -m 0755 "${WORKDIR}/${f}" "${D}${datadir}/${PN}/${f}"
+        install -m 0755 "${UNPACKDIR}/${f}" "${D}${datadir}/${PN}/${f}"
     done
 }
 
@@ -42,7 +42,7 @@ do_deploy() {
     install -d "${DEPLOYDIR}/tools"
 
     for f in ${C2A_FLASHER_FILES}; do
-        install -m 0755 "${WORKDIR}/${f}" "${DEPLOYDIR}/tools/${f}"
+        install -m 0755 "${UNPACKDIR}/${f}" "${DEPLOYDIR}/tools/${f}"
     done
 }
 

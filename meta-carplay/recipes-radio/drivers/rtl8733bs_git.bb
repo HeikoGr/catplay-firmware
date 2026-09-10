@@ -10,8 +10,6 @@ SRC_URI = "git://github.com/smp79/rtl8733BS_WiFi_linux_v5.15.17-113.git;branch=c
            file://0001-linux-7.0-compatibility.patch \
 "
 
-S = "${WORKDIR}/git"
-
 REALTEK_MODULE ?= "8733bs"
 REALTEK_CFLAGS = "-DCONFIG_LITTLE_ENDIAN \
                   -DCONFIG_IOCTL_CFG80211 \

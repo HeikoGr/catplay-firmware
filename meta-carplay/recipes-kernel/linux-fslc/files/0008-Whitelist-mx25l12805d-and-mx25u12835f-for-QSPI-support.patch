@@ -1,6 +1,8 @@
 Date: Thu, 2 Oct 2025 19:43:53 +0200
 Subject: [PATCH] Whitelist mx25l12805d and mx25u12835f for QSPI support
 
+Upstream-Status: Pending
+
 ---
  drivers/mtd/spi-nor/macronix.c | 5 +++--
  1 file changed, 3 insertions(+), 2 deletions(-)
@@ -30,4 +32,3 @@ index ea6be95e7..74afc1ee6 100644
  		.id = SNOR_ID(0xc2, 0x25, 0x39),
 -- 
 2.51.0
-

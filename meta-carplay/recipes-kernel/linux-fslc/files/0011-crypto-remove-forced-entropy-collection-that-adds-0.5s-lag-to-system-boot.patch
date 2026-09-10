@@ -2,6 +2,9 @@ Subject: [PATCH] crypto: remove forced entropy collection that adds ~0.5s lag to
 
 Even on systems with a fully trusted and early-initialized HWRNG there is no other way to get rid of this entropy collection
 than forcefully disabling it here.
+
+Upstream-Status: Inappropriate [C2A boot-time policy]
+
 diff --git a/crypto/jitterentropy.c b/crypto/jitterentropy.c
 index 3b390bd6c..5af396dd2 100644
 --- a/crypto/jitterentropy.c

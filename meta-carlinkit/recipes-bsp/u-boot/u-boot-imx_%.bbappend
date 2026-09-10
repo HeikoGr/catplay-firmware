@@ -16,13 +16,13 @@ SRC_URI += "file://0001-Register-custom-C2A-board.patch"
 install_c2a_board() {
     bbwarn "do_patch is now"
 
-    install -Dm 0755 ${WORKDIR}/arch/arm/dts/imx6ul-c2a.dts ${S}/arch/arm/dts/imx6ul-c2a.dts
-    install -Dm 0755 ${WORKDIR}/configs/imx6ul-c2a_defconfig.in ${S}/configs/imx6ul-c2a_defconfig
+    install -Dm 0755 ${UNPACKDIR}/arch/arm/dts/imx6ul-c2a.dts ${S}/arch/arm/dts/imx6ul-c2a.dts
+    install -Dm 0755 ${UNPACKDIR}/configs/imx6ul-c2a_defconfig.in ${S}/configs/imx6ul-c2a_defconfig
 
-    install -Dm 0755 ${WORKDIR}/board/freescale/mx6ul_c2a/Kconfig ${S}/board/freescale/mx6ul_c2a/Kconfig
-    install -Dm 0755 ${WORKDIR}/board/freescale/mx6ul_c2a/imximage.cfg ${S}/board/freescale/mx6ul_c2a/imximage.cfg
-    install -Dm 0755 ${WORKDIR}/board/freescale/mx6ul_c2a/mx6ul_c2a.c ${S}/board/freescale/mx6ul_c2a/mx6ul_c2a.c
-    install -Dm 0755 ${WORKDIR}/board/freescale/mx6ul_c2a/Makefile ${S}/board/freescale/mx6ul_c2a/Makefile
+    install -Dm 0755 ${UNPACKDIR}/board/freescale/mx6ul_c2a/Kconfig ${S}/board/freescale/mx6ul_c2a/Kconfig
+    install -Dm 0755 ${UNPACKDIR}/board/freescale/mx6ul_c2a/imximage.cfg ${S}/board/freescale/mx6ul_c2a/imximage.cfg
+    install -Dm 0755 ${UNPACKDIR}/board/freescale/mx6ul_c2a/mx6ul_c2a.c ${S}/board/freescale/mx6ul_c2a/mx6ul_c2a.c
+    install -Dm 0755 ${UNPACKDIR}/board/freescale/mx6ul_c2a/Makefile ${S}/board/freescale/mx6ul_c2a/Makefile
 }
 
 install_c2a_board:append:imx6ul-c2a() {
@@ -30,7 +30,7 @@ install_c2a_board:append:imx6ul-c2a() {
 
     sed -e "s|@KERNEL_OFFSET@|${C2A_KERNEL_OFFSET_HEX}|" \
         -e "s|@KERNEL_SIZE@|${C2A_KERNEL_SIZE_HEX}|" \
-        ${WORKDIR}/include/configs/mx6ul_c2a.h.in > ${S}/include/configs/mx6ul_c2a.h
+        ${UNPACKDIR}/include/configs/mx6ul_c2a.h.in > ${S}/include/configs/mx6ul_c2a.h
 }
 
 do_patch:append() {

@@ -1,0 +1,2 @@
+# V821 RAM rescue console (Linux USB g_serial, CDC ACM)
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0525", ATTRS{idProduct}=="a4a7", MODE="0666"

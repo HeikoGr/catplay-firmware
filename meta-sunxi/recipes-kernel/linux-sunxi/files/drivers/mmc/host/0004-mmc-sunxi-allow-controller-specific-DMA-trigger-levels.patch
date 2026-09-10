@@ -1,0 +1,31 @@
+Date: Thu, 6 Aug 2026 12:36:58 +0200
+Subject: [PATCH 19/21] mmc: sunxi: allow controller-specific DMA trigger
+ levels
+
+Upstream-Status: Pending
+---
+ drivers/mmc/host/sunxi-mmc.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/mmc/host/sunxi-mmc.c b/drivers/mmc/host/sunxi-mmc.c
+index 3ec138787bf8..e6df5b5c77f3 100644
+--- a/drivers/mmc/host/sunxi-mmc.c
++++ b/drivers/mmc/host/sunxi-mmc.c
+@@ -246,5 +246,6 @@ struct sunxi_mmc_cfg {
+ 	u32 idma_des_shift;
+ 	bool max_len_not_represented_by_zero;
++	u32 dma_tl;
+ 	const struct sunxi_mmc_clk_delay *clk_delays;
+ 
+ 	/* does the IP block support autocalibration? */
+@@ -335,7 +336,8 @@ static int sunxi_mmc_init_host(struct sunxi_mmc_host *host)
+ 	 *
+ 	 * TODO: sun9i has a larger FIFO and supports higher trigger values
+ 	 */
+-	mmc_writel(host, REG_FTRGL, 0x20070008);
++	mmc_writel(host, REG_FTRGL,
++		   host->cfg->dma_tl ? host->cfg->dma_tl : 0x20070008);
+ 	/* Maximum timeout value */
+ 	mmc_writel(host, REG_TMOUT, 0xffffffff);
+ 	/* Unmask SDIO interrupt if needed */
+

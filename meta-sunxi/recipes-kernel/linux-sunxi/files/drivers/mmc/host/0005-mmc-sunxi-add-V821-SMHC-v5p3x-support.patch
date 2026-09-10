@@ -1,0 +1,102 @@
+Date: Thu, 6 Aug 2026 12:36:58 +0200
+Subject: [PATCH 20/21] mmc: sunxi: add V821 SMHC v5p3x support
+
+TODO: figure out which of these sampling values came from the driver
+and which came from device's vendor firmware overrides
+
+Upstream-Status: Pending
+---
+ drivers/mmc/host/sunxi-mmc.c | 47 ++++++++++++++++++++++++++++++++++++
+ 1 file changed, 47 insertions(+)
+
+diff --git a/drivers/mmc/host/sunxi-mmc.c b/drivers/mmc/host/sunxi-mmc.c
+index e6df5b5c77f3..4e98e95f83ca 100644
+--- a/drivers/mmc/host/sunxi-mmc.c
++++ b/drivers/mmc/host/sunxi-mmc.c
+@@ -230,6 +230,15 @@
+ 
+ #define SDXC_CAL_TIMEOUT	3	/* in seconds, 3s is enough*/
+ 
++#define SDXC_V5P3X_CMD_DRV_PH_SEL	BIT(16)
++#define SDXC_V5P3X_DAT_DRV_PH_SEL	BIT(17)
++#define SDXC_V5P3X_CMD_SAMP_PH_MASK	GENMASK(5, 4)
++#define SDXC_V5P3X_DAT_SAMP_PH_MASK	GENMASK(9, 8)
++#define SDXC_V5P3X_CMD_SAMP_PH		BIT(4)
++#define SDXC_V5P3X_DAT_SAMP_PH		BIT(8)
++#define SDXC_V5P3X_SAMP_DL		0x00002000
++#define SDXC_V5P3X_DS_DL			0x00002000
++
+ struct sunxi_mmc_clk_delay {
+ 	u32 output;
+ 	u32 sample;
+@@ -247,5 +256,6 @@ struct sunxi_mmc_cfg {
+ 	bool max_len_not_represented_by_zero;
+ 	u32 dma_tl;
++	bool needs_v5p3x_timing;
+ 	const struct sunxi_mmc_clk_delay *clk_delays;
+ 
+ 	/* does the IP block support autocalibration? */
+@@ -727,6 +737,28 @@ static int sunxi_mmc_calibrate(struct sunxi_mmc_host *host, int reg_off)
+ 	return 0;
+ }
+ 
++static void sunxi_mmc_set_v5p3x_timing(struct sunxi_mmc_host *host,
++				      u32 rate)
++{
++	u32 rval;
++
++	if (!host->cfg->needs_v5p3x_timing || rate <= 400 * 1000)
++		return;
++
++	rval = mmc_readl(host, REG_DRV_DL);
++	rval |= SDXC_V5P3X_CMD_DRV_PH_SEL | SDXC_V5P3X_DAT_DRV_PH_SEL;
++	mmc_writel(host, REG_DRV_DL, rval);
++
++	rval = mmc_readl(host, REG_SD_NTSR);
++	rval &= ~(SDXC_V5P3X_CMD_SAMP_PH_MASK |
++		  SDXC_V5P3X_DAT_SAMP_PH_MASK);
++	rval |= SDXC_V5P3X_CMD_SAMP_PH | SDXC_V5P3X_DAT_SAMP_PH;
++	mmc_writel(host, REG_SD_NTSR, rval);
++
++	mmc_writel(host, REG_SAMP_DL_REG, SDXC_V5P3X_SAMP_DL);
++	mmc_writel(host, REG_DS_DL_REG, SDXC_V5P3X_DS_DL);
++}
++
+ static int sunxi_mmc_clk_set_phase(struct sunxi_mmc_host *host,
+ 				   struct mmc_ios *ios, u32 rate)
+ {
+@@ -856,6 +888,8 @@ static int sunxi_mmc_clk_set_rate(struct sunxi_mmc_host *host,
+ 	if (ret)
+ 		return ret;
+ 
++	sunxi_mmc_set_v5p3x_timing(host, rate);
++
+ 	/*
+ 	 * FIXME:
+ 	 *
+@@ -1184,6 +1218,17 @@ static const struct sunxi_mmc_cfg sun20i_d1_cfg = {
+ 	.needs_new_timings = true,
+ };
+ 
++static const struct sunxi_mmc_cfg sun300i_v821_cfg = {
++	.idma_des_size_bits = 12,
++	.idma_des_shift = 2,
++	.max_len_not_represented_by_zero = true,
++	.dma_tl = (0x2 << 28) | (7 << 16) | 248,
++	.needs_v5p3x_timing = true,
++	.can_calibrate = true,
++	.mask_data0 = true,
++	.needs_new_timings = true,
++};
++
+ static const struct sunxi_mmc_cfg sun50i_a64_cfg = {
+ 	.idma_des_size_bits = 16,
+ 	.clk_delays = NULL,
+@@ -1222,6 +1268,7 @@ static const struct of_device_id sunxi_mmc_of_match[] = {
+ 	{ .compatible = "allwinner,sun8i-a83t-emmc", .data = &sun8i_a83t_emmc_cfg },
+ 	{ .compatible = "allwinner,sun9i-a80-mmc", .data = &sun9i_a80_cfg },
+ 	{ .compatible = "allwinner,sun20i-d1-mmc", .data = &sun20i_d1_cfg },
++	{ .compatible = "allwinner,sun300i-v821-mmc", .data = &sun300i_v821_cfg },
+ 	{ .compatible = "allwinner,sun50i-a64-mmc", .data = &sun50i_a64_cfg },
+ 	{ .compatible = "allwinner,sun50i-a64-emmc", .data = &sun50i_a64_emmc_cfg },
+ 	{ .compatible = "allwinner,sun50i-a100-mmc", .data = &sun20i_d1_cfg },

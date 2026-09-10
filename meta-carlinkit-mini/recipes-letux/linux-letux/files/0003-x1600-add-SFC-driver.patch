@@ -1,5 +1,7 @@
 Date: Tue, 18 Aug 2026 05:40:52 +0200
 Subject: [PATCH] x1600: add SFC driver
+Upstream-Status: Pending
+
 
 Keep the SFC functional clock gated while the controller is idle.
 Enable it only while configuring a device or executing a SPI memory

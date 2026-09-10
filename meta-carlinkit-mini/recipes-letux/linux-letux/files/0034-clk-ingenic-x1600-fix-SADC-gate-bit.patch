@@ -1,5 +1,7 @@
 Date: Tue, 18 Aug 2026 06:25:00 +0200
 Subject: [PATCH 34/36] clk: ingenic: x1600: fix SADC gate bit
+Upstream-Status: Pending
+
 
 SADC and UART0 are assigned to the same CLKGR0 bit 14 even though
 they are independent clocks. Disabling the unused SADC clock can

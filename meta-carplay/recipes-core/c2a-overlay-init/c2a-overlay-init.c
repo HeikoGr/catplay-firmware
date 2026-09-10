@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include <errno.h>
+#include <dirent.h>
 #include <fcntl.h>
 #include <grp.h>
 #include <linux/limits.h>
@@ -60,21 +61,173 @@ static int mkdir_p(const char *path, mode_t mode) {
     return 0;
 }
 
-static int run_program_if_exists_and_wait(const char *path, char *const argv[]) {
-    if (access(path, X_OK) != 0) return -1;
-    pid_t pid = fork();
-    if (pid < 0) {
-        warnf("fork failed: %s", strerror(errno));
-        return -1;
-    } else if (pid == 0) {
-        execv(path, argv);
-        _exit(127);
-    } else {
-        int status = 0;
-        waitpid(pid, &status, 0);
-        (void)status;
-        return 0;
+static int cmdline_has_flag(const char *flag) {
+    char buf[4096];
+    ssize_t n;
+    int fd = open("/proc/cmdline", O_RDONLY | O_CLOEXEC);
+
+    if (fd < 0) return 0;
+    n = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    if (n <= 0) return 0;
+    buf[n] = '\0';
+
+    char *saveptr = NULL;
+    for (char *token = strtok_r(buf, " \t\r\n", &saveptr);
+         token; token = strtok_r(NULL, " \t\r\n", &saveptr)) {
+        if (strcmp(token, flag) == 0) return 1;
     }
+    return 0;
+}
+
+static int mount_tmpfs(const char *path, const char *options) {
+    if (mkdir_p(path, 0755) != 0) return -1;
+    return mount("tmpfs", path, "tmpfs", MS_NOSUID | MS_NODEV, options);
+}
+
+static int copy_metadata(int dstfd, const char *name, const struct stat *st,
+                         int symlink) {
+    if (!symlink) {
+        if (fchmodat(dstfd, name, st->st_mode & 07777, 0) != 0 &&
+            errno != EOPNOTSUPP)
+            return -1;
+    }
+    if (fchownat(dstfd, name, st->st_uid, st->st_gid,
+                 symlink ? AT_SYMLINK_NOFOLLOW : 0) != 0 && errno != EPERM)
+        return -1;
+    return 0;
+}
+
+static int copy_node(int srcfd, int dstfd, const char *name,
+                     const struct stat *st);
+
+static int copy_directory(int srcfd, int dstfd) {
+    int result = 0;
+    DIR *dir = fdopendir(srcfd);
+    if (!dir) {
+        close(srcfd);
+        return -1;
+    }
+    for (;;) {
+        struct dirent *entry = readdir(dir);
+        if (!entry)
+            break;
+        if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, ".."))
+            continue;
+        struct stat st;
+        if (fstatat(dirfd(dir), entry->d_name, &st, AT_SYMLINK_NOFOLLOW) != 0) {
+            result = -1;
+            continue;
+        }
+        if (copy_node(dirfd(dir), dstfd, entry->d_name, &st) != 0)
+            result = -1;
+    }
+    if (closedir(dir) != 0)
+        result = -1;
+    return result;
+}
+
+static int copy_regular(int srcfd, int dstfd, const char *name,
+                        const struct stat *st) {
+    int in = openat(srcfd, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (in < 0)
+        return -1;
+    int out = openat(dstfd, name, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC,
+                     st->st_mode & 07777);
+    if (out < 0) {
+        close(in);
+        return -1;
+    }
+    char buf[16384];
+    int result = 0;
+    for (;;) {
+        ssize_t n = read(in, buf, sizeof(buf));
+        if (n == 0)
+            break;
+        if (n < 0) {
+            if (errno == EINTR)
+                continue;
+            result = -1;
+            break;
+        }
+        ssize_t off = 0;
+        while (off < n) {
+            ssize_t written = write(out, buf + off, (size_t)(n - off));
+            if (written < 0) {
+                if (errno == EINTR)
+                    continue;
+                result = -1;
+                break;
+            }
+            off += written;
+        }
+        if (result != 0)
+            break;
+    }
+    if (fchmod(out, st->st_mode & 07777) != 0)
+        result = -1;
+    if (fchown(out, st->st_uid, st->st_gid) != 0 && errno != EPERM)
+        result = -1;
+    close(out);
+    close(in);
+    return result;
+}
+
+static int copy_node(int srcfd, int dstfd, const char *name,
+                     const struct stat *st) {
+    if (S_ISREG(st->st_mode))
+        return copy_regular(srcfd, dstfd, name, st);
+
+    if (S_ISLNK(st->st_mode)) {
+        char target[PATH_MAX];
+        ssize_t len = readlinkat(srcfd, name, target, sizeof(target) - 1);
+        if (len < 0)
+            return -1;
+        target[len] = '\0';
+        if (symlinkat(target, dstfd, name) != 0)
+            return -1;
+        return copy_metadata(dstfd, name, st, 1);
+    }
+
+    if (S_ISDIR(st->st_mode)) {
+        if (mkdirat(dstfd, name, st->st_mode & 07777) != 0 && errno != EEXIST)
+            return -1;
+        int src_child = openat(srcfd, name, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        int dst_child = openat(dstfd, name, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        if (src_child < 0 || dst_child < 0) {
+            if (src_child >= 0) close(src_child);
+            if (dst_child >= 0) close(dst_child);
+            return -1;
+        }
+        int result = copy_directory(src_child, dst_child);
+        if (copy_metadata(dstfd, name, st, 0) != 0)
+            result = -1;
+        close(dst_child);
+        return result;
+    }
+
+    if (S_ISFIFO(st->st_mode)) {
+        if (mkfifoat(dstfd, name, st->st_mode & 07777) != 0)
+            return -1;
+        return copy_metadata(dstfd, name, st, 0);
+    }
+
+    return 0;
+}
+
+/* Equivalent to copying source/. into target, without cp, BusyBox, fork or
+ * exec. All traversal and file operations stay in this process. */
+static int copy_dir_contents(const char *source, const char *target) {
+    int srcfd = open(source, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    int dstfd = open(target, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (srcfd < 0 || dstfd < 0) {
+        if (srcfd >= 0) close(srcfd);
+        if (dstfd >= 0) close(dstfd);
+        return -1;
+    }
+    int result = copy_directory(srcfd, dstfd);
+    close(dstfd);
+    return result;
 }
 
 int main(int argc, char *argv[]) {
@@ -145,14 +298,33 @@ int main(int argc, char *argv[]) {
         warnf("mount tmpfs /run failed: %s", strerror(errno));
     }
 
-    // 6) create overlay dirs and mount overlay
-    mkdir_p("/run/upper", 0755);
-    mkdir_p("/run/work", 0755);
+    int no_overlay = cmdline_has_flag("c2a_no_ovl");
+
+    // 6) Either mount the normal overlay or bind the original root and use
+    // explicit tmpfs mounts for the writable state needed by daemons.
     mkdir_p("/run/newroot", 0755);
 
-    const char *overlay_opts = "lowerdir=/,upperdir=/run/upper,workdir=/run/work";
-    if (mount("overlay", "/run/newroot", "overlay", 0, overlay_opts) != 0) {
-        warnf("mount overlay failed: %s", strerror(errno));
+    if (no_overlay) {
+        kmsg_log("[c2a-overlay-init] c2a_no_ovl: disabling overlayfs\n");
+        mkdir_p("/run/etc-copy", 0755);
+        {
+            int copy_status = copy_dir_contents("/etc/.", "/run/etc-copy");
+            char msg[128];
+            snprintf(msg, sizeof(msg),
+                     "[c2a-overlay-init] c2a_no_ovl: pre-pivot /etc copy status=%d\n",
+                     copy_status);
+            kmsg_log(msg);
+        }
+        if (mount("/", "/run/newroot", NULL, MS_BIND, NULL) != 0) {
+            warnf("bind-mount root for c2a_no_ovl failed: %s", strerror(errno));
+        }
+    } else {
+        mkdir_p("/run/upper", 0755);
+        mkdir_p("/run/work", 0755);
+        const char *overlay_opts = "lowerdir=/,upperdir=/run/upper,workdir=/run/work";
+        if (mount("overlay", "/run/newroot", "overlay", 0, overlay_opts) != 0) {
+            warnf("mount overlay failed: %s", strerror(errno));
+        }
     }
 
     // prepare old_root
@@ -176,6 +348,25 @@ int main(int argc, char *argv[]) {
         if (mount("/old_root/proc", "/proc", NULL, MS_MOVE, NULL) != 0) {
             warnf("move /old_root/proc -> /proc failed: %s", strerror(errno));
         }
+    }
+
+    if (no_overlay) {
+        if (mount_tmpfs("/etc", "mode=0755,size=2M") != 0) {
+            warnf("mount tmpfs /etc failed: %s", strerror(errno));
+        } else {
+            int restore_status = copy_dir_contents("/run/etc-copy/.", "/etc");
+            char msg[128];
+            snprintf(msg, sizeof(msg),
+                     "[c2a-overlay-init] c2a_no_ovl: /etc restore status=%d\n",
+                     restore_status);
+            kmsg_log(msg);
+        }
+        if (mount_tmpfs("/var/lib", "mode=0755,size=4M") != 0)
+            warnf("mount tmpfs /var/lib failed: %s", strerror(errno));
+        if (mount_tmpfs("/var/cache", "mode=0755,size=2M") != 0)
+            warnf("mount tmpfs /var/cache failed: %s", strerror(errno));
+        if (mount_tmpfs("/var/volatile", "mode=0755,size=8M") != 0)
+            warnf("mount tmpfs /var/volatile failed: %s", strerror(errno));
     }
 
     if (mount("devtmpfs", "/dev", "devtmpfs", MS_NOSUID, "mode=0755") != 0) {

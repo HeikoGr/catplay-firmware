@@ -1,78 +1,9 @@
-diff --git a/aic8800_bsp/aic_bsp_driver.c b/aic8800_bsp/aic_bsp_driver.c
---- a/aic8800_bsp/aic_bsp_driver.c
-+++ b/aic8800_bsp/aic_bsp_driver.c
-@@ -16,6 +16,7 @@
- #include <linux/delay.h>
- #include <linux/vmalloc.h>
- #include <linux/firmware.h>
-+#include <linux/gpio.h>
- 
- #if LINUX_VERSION_CODE < KERNEL_VERSION(3, 12, 0)
- #include <linux/hardirq.h>
-@@ -36,6 +37,8 @@
- extern char aic_fw_path[FW_PATH_MAX];
- extern struct aic_sdio_dev *aicbsp_sdiodev;
- 
-+#define AX1800M_BT_MODE_GPIO 89
-+
- static void cmd_dump(const struct rwnx_cmd *cmd)
- {
- 	printk(KERN_CRIT "tkn[%d]  flags:%04x  result:%3d  cmd:%4d - reqcfm(%4d)\n",
-@@ -1654,7 +1657,7 @@ static struct aicbt_info_t aicbt_info[]={
-         .txpwr_lvl     = AICBT_TXPWR_LVL_DEFAULT_8800dc,
-     },//PRODUCT_ID_AIC8800DW
-     {
--        .btmode        = AICBT_BTMODE_DEFAULT_8800d80,
-+        .btmode        = AICBT_BTMODE_BT_ONLY, /* AX1800M: GPIO low */
-         .btport        = AICBT_BTPORT_DEFAULT,
-         .uart_baud     = AICBT_UART_BAUD_DEFAULT,
-         .uart_flowctrl = AICBT_UART_FC_DEFAULT,
-@@ -1692,8 +1695,40 @@ static struct aicbt_info_t aicbt_info[]={
- int aicbt_patch_table_load(struct aic_sdio_dev *sdiodev, struct aicbt_patch_table *head)
- {
- 	struct aicbt_patch_table *p;
--	int ret = 0, i;
-+	int ret = 0, i, gpio_ret, gpio_value;
-+	struct gpio_desc *gpio_desc;
- 	uint32_t *data = NULL;
-+
-+    /*
-+     * GPIO 89 selects the AX1800M PCB antenna setup:
-+     * low = BT_ONLY, high = BT_ONLY_COANT.
-+     */
-+    if (sdiodev->chipid == PRODUCT_ID_AIC8800D80) {
-+        gpio_ret = gpio_request(AX1800M_BT_MODE_GPIO, "ax1800m-bt-mode");
-+        if (gpio_ret) {
-+            printk("%s failed to request AX1800M bt mode gpio[%d]:%d\n",
-+                   __func__, AX1800M_BT_MODE_GPIO, gpio_ret);
-+        } else {
-+            gpio_desc = gpio_to_desc(AX1800M_BT_MODE_GPIO);
-+            gpio_ret = gpio_desc ? gpiod_direction_input(gpio_desc) : -EINVAL;
-+            if (gpio_ret) {
-+                printk("%s failed to configure AX1800M bt mode gpio[%d]:%d\n",
-+                       __func__, AX1800M_BT_MODE_GPIO, gpio_ret);
-+            } else {
-+                gpio_value = gpiod_get_raw_value(gpio_desc);
-+                if (gpio_value < 0) {
-+                    printk("%s failed to read AX1800M bt mode gpio[%d]:%d\n",
-+                           __func__, AX1800M_BT_MODE_GPIO, gpio_value);
-+                } else {
-+                    printk("%s AX1800M bt mode gpio[%d]:%d\n", __func__,
-+                           AX1800M_BT_MODE_GPIO, gpio_value);
-+                    aicbt_info[sdiodev->chipid].btmode = gpio_value ?
-+                        AICBT_BTMODE_BT_ONLY_COANT : AICBT_BTMODE_BT_ONLY;
-+                }
-+            }
-+            gpio_free(AX1800M_BT_MODE_GPIO);
-+        }
-+    }
-     if(head == NULL){
-         return -1;
-     }
+Upstream-Status: Inappropriate [hardware-specific integration]
+
 diff --git a/aic8800_bsp/aic_bsp_driver.h b/aic8800_bsp/aic_bsp_driver.h
 --- a/aic8800_bsp/aic_bsp_driver.h
 +++ b/aic8800_bsp/aic_bsp_driver.h
-@@ -530,7 +530,7 @@ enum chip_rev {
+@@ -530,7 +530,7 @@
  
  
  #define FEATURE_SDIO_CLOCK          50000000 // 0: default, other: target clock rate
@@ -81,34 +12,138 @@ diff --git a/aic8800_bsp/aic_bsp_driver.h b/aic8800_bsp/aic_bsp_driver.h
  #define FEATURE_SDIO_PHASE          2        // 0: default, 2: 180°
  
  struct aicbt_patch_table {
+
 diff --git a/aic8800_bsp/aicsdio.c b/aic8800_bsp/aicsdio.c
 --- a/aic8800_bsp/aicsdio.c
 +++ b/aic8800_bsp/aicsdio.c
-@@ -1953,7 +1953,7 @@ int aicwf_sdiov3_func_init(struct aic_sdio_dev *sdiodev)
+@@ -20,6 +20,7 @@
+ #include "aic_bsp_driver.h"
+ #include <linux/version.h>
+ #include <linux/delay.h>
++#include <linux/of.h>
+ #ifdef CONFIG_PLATFORM_ROCKCHIP
+ #include <linux/rfkill-wlan.h>
+ #endif /* CONFIG_PLATFORM_ROCKCHIP */
+@@ -1953,7 +1954,10 @@
  	struct mmc_host *host;
  	u8 byte_mode_disable = 0x1;//1: no byte mode
  	int ret = 0;
 -    //u8 val;
++	struct device_node *np = sdiodev->dev ? sdiodev->dev->of_node : NULL;
++	u32 prop;
++	bool iopad_tune = false;
 +    u8 val;
  	struct aicbsp_feature_t feature;
  
  	aicbsp_get_feature(&feature, NULL);
-@@ -1983,7 +1983,7 @@ int aicwf_sdiov3_func_init(struct aic_sdio_dev *sdiodev)
+@@ -1961,6 +1965,9 @@
+ 
+ 	host = sdiodev->func->card->host;
+ 
++	if (!np && host->parent)
++		np = host->parent->of_node;
++	iopad_tune = np && of_property_read_bool(np, "c2a,iopad_tune");
+ 	sdio_claim_host(sdiodev->func);
+ 	sdiodev->func->card->quirks |= MMC_QUIRK_LENIENT_FN0;
+ 
+@@ -1983,11 +1990,23 @@
          sdio_release_host(sdiodev->func);
          return ret;
      }
 -#if 0
-+#if 1
++	if (iopad_tune) {
++		u8 iopad_ctrl = (host->ios.timing == MMC_TIMING_UHS_DDR50) ? 0x21 : 0x01;
++		u8 iopad_delay2 = 0;
++		u8 iopad_delay1 = 0x40;
++		if (!of_property_read_u32(np, "c2a,iopad_ctrl", &prop))
++			iopad_ctrl = prop;
++		if (!of_property_read_u32(np, "c2a,iopad_delay2", &prop))
++			iopad_delay2 = prop;
++		if (!of_property_read_u32(np, "c2a,iopad_delay1", &prop))
++			iopad_delay1 = prop;
++		pr_info("aicbsp: OF SDIO iopad tuning enabled on %pOF: ctrl=0x%02x delay2=0x%02x delay1=0x%02x timing=%u\n",
++			np, iopad_ctrl, iopad_delay2, iopad_delay1,
++			host->ios.timing);
      if (host->ios.timing == MMC_TIMING_UHS_DDR50) {
-         val = 0x21;//0x1D;//0x5;
+-        val = 0x21;//0x1D;//0x5;
++        val = iopad_ctrl;
      } else {
-@@ -2002,7 +2002,8 @@ int aicwf_sdiov3_func_init(struct aic_sdio_dev *sdiodev)
-         sdio_release_host(sdiodev->func);
-         return ret;
+-        val = 0x01;//0x19;//0x1;
++        val = iopad_ctrl;
      }
+     val |= SDIOCLK_FREE_RUNNING_BIT;
+     sdio_f0_writeb(sdiodev->func, val, 0xF0, &ret);
+@@ -1996,1 +2012,1 @@
+-    sdio_f0_writeb(sdiodev->func, 0x0, 0xF8, &ret);
++    sdio_f0_writeb(sdiodev->func, iopad_delay2, 0xF8, &ret);
+@@ -2001,1 +2017,1 @@
 -    sdio_f0_writeb(sdiodev->func, 0x40, 0xF1, &ret);
-+    /* AX1800: use iopad delay1 = 0x80 to fix SDIO timings */
-+    sdio_f0_writeb(sdiodev->func, 0x80, 0xF1, &ret);
-     if (ret) {
-         sdio_err("set iopad delay1 fail %d\n", ret);
-         sdio_release_host(sdiodev->func);
++    sdio_f0_writeb(sdiodev->func, iopad_delay1, 0xF1, &ret);
+@@ -2016,3 +2035,5 @@
+ #endif
+-#endif
++	} else {
++		pr_info("aicbsp: OF SDIO iopad tuning disabled on %pOF\n", np);
++	}
+ 	sdio_release_host(sdiodev->func);
+
+diff --git a/aic8800_bsp/aic_bsp_driver.c b/aic8800_bsp/aic_bsp_driver.c
+--- a/aic8800_bsp/aic_bsp_driver.c
++++ b/aic8800_bsp/aic_bsp_driver.c
+@@ -16,6 +16,11 @@
+ #include <linux/delay.h>
+ #include <linux/vmalloc.h>
+ #include <linux/firmware.h>
++#include <linux/mmc/sdio_func.h>
++#include <linux/mmc/card.h>
++#include <linux/mmc/host.h>
++#include <linux/gpio.h>
++#include <linux/of.h>
+ 
+ #if LINUX_VERSION_CODE < KERNEL_VERSION(3, 12, 0)
+ #include <linux/hardirq.h>
+@@ -1692,6 +1697,43 @@
+ 	struct aicbt_patch_table *p;
+-	int ret = 0, i;
++	int ret = 0, i, gpio_ret, gpio_value;
++	u32 btmode_pin, btmode;
++	struct gpio_desc *gpio_desc;
++	struct device_node *np = sdiodev->dev ? sdiodev->dev->of_node : NULL;
+ 	uint32_t *data = NULL;
++
++	/* SDIO functions have no OF child on this platform; use the host node. */
++	if (!np && sdiodev->func && sdiodev->func->card &&
++	    sdiodev->func->card->host && sdiodev->func->card->host->parent)
++		np = sdiodev->func->card->host->parent->of_node;
++
++	if (np && !of_property_read_u32(np, "c2a,btmode_pin", &btmode_pin)) {
++		gpio_ret = gpio_request(btmode_pin, "aic-bt-mode");
++		if (!gpio_ret) {
++			gpio_desc = gpio_to_desc(btmode_pin);
++			gpio_ret = gpio_desc ? gpiod_direction_input(gpio_desc) : -EINVAL;
++			if (!gpio_ret) {
++				gpio_value = gpiod_get_raw_value(gpio_desc);
++				if (gpio_value >= 0) {
++					pr_info("rt_gpio=%u value =%d\n", btmode_pin, gpio_value);
++					aicbt_info[sdiodev->chipid].btmode = gpio_value ?
++						AICBT_BTMODE_BT_ONLY_COANT : AICBT_BTMODE_BT_ONLY;
++				}
++			}
++			gpio_free(btmode_pin);
++		} else {
++			pr_err("aicbt: gpio_request(%u) failed: %d\\n", btmode_pin,
++			       gpio_ret);
++		}
++	} else if (np && !of_property_read_u32(np, "c2a,btmode", &btmode)) {
++		aicbt_info[sdiodev->chipid].btmode = btmode;
++	}
++	if (np) {
++		if (!of_property_read_u32(np, "c2a,uart_baud", &btmode))
++			aicbt_info[sdiodev->chipid].uart_baud = btmode;
++		if (!of_property_read_u32(np, "c2a,uart_flowctrl", &btmode))
++			aicbt_info[sdiodev->chipid].uart_flowctrl = btmode;
++	}
++
+     if(head == NULL){
+         return -1;
+     }

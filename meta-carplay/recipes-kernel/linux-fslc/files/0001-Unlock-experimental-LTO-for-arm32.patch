@@ -1,6 +1,8 @@
 Date: Mon, 7 Jul 2025 07:04:32 +0200
 Subject: [PATCH] Unlock experimental LTO for arm32
 
+Upstream-Status: Inappropriate [experimental C2A size optimization]
+
 ---
  arch/Kconfig                      | 2 --
  arch/arm/Kconfig                  | 2 ++
@@ -47,4 +49,3 @@ index 945b5975f..fc7fb1573 100644
  ccflags-y := -fpic $(call cc-option,-mno-single-pic-base,) -fno-builtin \
 -- 
 2.43.0
-

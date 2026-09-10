@@ -2,6 +2,9 @@ Date: Sat, 22 Nov 2025 22:45:36 +0100
 Subject: [PATCH] ci-hdrc: fix 5 second role-switch delay when acting as a CarPlay HeadUnit
 
 ci_hdrc ci_hdrc.0: timeout waiting for 00000800 in OTGSC
+
+Upstream-Status: Inappropriate [C2A hardware and CarPlay role behavior]
+
 ---
  drivers/usb/chipidea/otg.c | 2 +-
  1 file changed, 1 insertion(+), 1 deletion(-)
@@ -21,4 +24,3 @@ index 647e98f4e..5ba70a0d2 100644
  		/* vbus change may have already occurred */
 -- 
 2.51.1
-

@@ -1,4 +1,6 @@
 Subject: [PATCH] bluetooth: add basic HCI driver for AIC8800
+Upstream-Status: Pending
+
 
 It's similar in functionality to legacy `hciattach`-based userspace variant.
 Note that the module currently **HAS TO** be loaded after AIC8800 Wi-Fi driver is loaded

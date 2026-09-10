@@ -9,6 +9,7 @@ C2A_BUNDLE_ARTIFACTS ?= ""
 
 do_c2a_bundle[depends] += "${C2A_SYSTEM_IMAGE}:do_image_complete virtual/kernel:do_deploy"
 do_c2a_bundle[depends] += "${C2A_INITRAMFS_IMAGE}:do_image_complete"
+do_c2a_bundle[depends] += "${C2A_FITIMAGE_DEPENDENCY}"
 do_c2a_bundle[depends] += "${C2A_BUNDLE_EXTRA_DEPENDS}"
 # Don't clean; for now we want to allow multiple machines to populate a shared bundle...
 #do_c2a_bundle[cleandirs] += "${C2A_BUNDLE_DIR}"

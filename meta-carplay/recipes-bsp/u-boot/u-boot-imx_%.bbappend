@@ -8,8 +8,11 @@ SRC_URI:append = " file://0003-usb-gadget-skip-first-ChipIdea-UDC-on-C2A.patch"
 inherit c2a-offset-helper
 
 do_compile:append() {
-    clean_machine=$(echo "${UBOOT_MACHINE}" | sed 's/ //g')
-    file_path="${B}/${clean_machine}/u-boot.imx"
+    # uboot-config places a single UBOOT_CONFIG build in
+    # ${B}/<defconfig>-<config> and exposes that directory through
+    # KCONFIG_CONFIG_ROOTDIR.  Do not reconstruct the legacy path from
+    # UBOOT_MACHINE: it omits the config suffix since Wrynose.
+    file_path="${KCONFIG_CONFIG_ROOTDIR}/u-boot.imx"
     size=$(stat -c%s "$file_path")
 
     effective_size=$(expr "$size") # + 1024)
@@ -25,11 +28,10 @@ do_compile:append() {
 }
 
 do_deploy:append() {
-    UBOOT_MACHINE_CLEAN=$(echo "${UBOOT_MACHINE}" | sed 's/ //g')
-    UBOOT_ELF_PATH="${B}/${UBOOT_MACHINE_CLEAN}/u-boot"
-    UBOOT_BIN_PATH="${B}/${UBOOT_MACHINE_CLEAN}/u-boot.bin"
-    UBOOT_DTB_PATH="${B}/${UBOOT_MACHINE_CLEAN}/dts/dt.dtb"
-    DEFCONFIG_PATH="${B}/${UBOOT_MACHINE_CLEAN}/.config"
+    UBOOT_ELF_PATH="${KCONFIG_CONFIG_ROOTDIR}/u-boot"
+    UBOOT_BIN_PATH="${KCONFIG_CONFIG_ROOTDIR}/u-boot.bin"
+    UBOOT_DTB_PATH="${KCONFIG_CONFIG_ROOTDIR}/dts/dt.dtb"
+    DEFCONFIG_PATH="${KCONFIG_CONFIG_ROOTDIR}/.config"
 
     if [ -e "${UBOOT_ELF_PATH}" ]; then
         install -Dm644 "${UBOOT_ELF_PATH}" "${DEPLOYDIR}/uboot-${MACHINE}-${PV}-${PR}.elf"

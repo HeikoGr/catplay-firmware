@@ -4,8 +4,6 @@ PR = "r2"
 
 SRC_URI = "git://github.com/friendlyarm/rtl8822cs.git;branch=nanopi-r2;protocol=https"
 
-S = "${WORKDIR}/git"
-
 REALTEK_MODULE ?= "88x2cs"
 REALTEK_CFLAGS = "-DCONFIG_LITTLE_ENDIAN \
                   -DCONFIG_IOCTL_CFG80211 \

@@ -6,7 +6,7 @@
 #include <linux/stringify.h>
 #include "mx6_common.h"
 #include <asm/mach-imx/gpio.h>
-#include "imx_env.h"
+#include <env/nxp/imx_env.h>
 
 #define BOOTARGS_CMA_SIZE   ""
 

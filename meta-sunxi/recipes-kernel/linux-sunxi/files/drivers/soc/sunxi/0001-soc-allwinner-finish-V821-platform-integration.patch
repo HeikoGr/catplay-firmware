@@ -1,0 +1,57 @@
+Date: Thu, 6 Aug 2026 12:36:40 +0200
+Subject: [PATCH 14/21] riscv: sunxi: split sun20i and sun300i platform selection
+
+Upstream-Status: Pending
+---
+ arch/riscv/Kconfig.socs | 37 +++++++++++++++++++++++++++++++------
+ 1 file changed, 33 insertions(+), 4 deletions(-)
+
+diff --git a/arch/riscv/Kconfig.socs b/arch/riscv/Kconfig.socs
+--- a/arch/riscv/Kconfig.socs
++++ b/arch/riscv/Kconfig.socs
+@@ -62,12 +62,41 @@ config SOC_STARFIVE
+ config ARCH_SUNXI
+-	bool "Allwinner sun20i SoCs"
++	bool "Allwinner SoCs"
+ 	depends on MMU
+-	select ERRATA_THEAD
+ 	select SUN4I_TIMER
+ 	help
+-	  This enables support for Allwinner sun20i platform hardware,
+-	  including boards based on the D1 and D1s SoCs.
++	  This enables support for Allwinner RISC-V platform hardware.
++
++if ARCH_SUNXI
++
++choice
++	prompt "Allwinner RISC-V SoC family"
++	default ARCH_SUNXI_SUN20I
++
++config ARCH_SUNXI_SUN20I
++	bool "Allwinner sun20i SoCs"
++	select ERRATA_THEAD
++	help
++	  This enables support for Allwinner sun20i platform hardware,
++	  including boards based on the D1 and D1s SoCs.
++
++config ARCH_SUNXI_SUN300I
++	bool "Allwinner sun300i SoCs"
++	depends on RISCV_ALTERNATIVE
++	depends on !RISCV_ISA_ZICBOM
++	depends on RISCV_SBI
++	select ANDES_CACHE
++	select CACHEMAINT_FOR_DMA
++	select DMA_GLOBAL_POOL
++	select ERRATA_ANDES
++	select RISCV_DMA_NONCOHERENT
++	help
++	  This enables support for Allwinner sun300i platform hardware,
++	  including boards based on the V821 SoC.
++
++endchoice
++
++endif
+ 
+ config ARCH_TENSTORRENT
+ 	bool "Tenstorrent SoCs"
+ 	help

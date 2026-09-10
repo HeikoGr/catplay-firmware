@@ -1,87 +1,120 @@
 Subject: [PATCH] libstd: adapt riscv32 musl time64 to libc 1.0 alpha
 
-Upstream-Status: Inappropriate [compatibility shim for Rust 1.90 and libc 1.0 alpha]
+Upstream-Status: Inappropriate [compatibility shim for Rust 1.94 and libc 1.0 alpha]
 
 libc 1.0 exposes the musl 1.2.3 time64 stat timestamps as timespec fields,
 keeps the ABI padding in timespec private, and uses the POSIX-correct mutable
-argv pointee in execvp.  Rust 1.90's standard library still expects the libc
+argv pointee in execvp.  Rust 1.94's standard library still expects the libc
 0.2 API.  Keep the new ABI definitions and adapt the affected libstd callers.
 
 ---
  library/std/src/os/linux/fs.rs           | 12 ++++++------
  library/std/src/sys/fs/unix.rs           | 12 +++++++++---
- library/std/src/sys/pal/unix/thread.rs   |  7 +++----
+ library/std/src/sys/thread/unix.rs       |  7 +++----
  library/std/src/sys/pal/unix/time.rs     | 18 ++++++++++++------
  library/std/src/sys/process/unix/unix.rs |  5 ++++-
  5 files changed, 34 insertions(+), 20 deletions(-)
 
---- rustc-1.90.0-src.orig/library/std/src/os/linux/fs.rs
-+++ rustc-1.90.0-src/library/std/src/os/linux/fs.rs
-@@ -370 +370 @@
+--- rustc-1.94.1-src.orig/library/std/src/os/linux/fs.rs
++++ rustc-1.94.1-src/library/std/src/os/linux/fs.rs
+@@ -367,10 +367,10 @@
+         if let Some(atime) = file_attr.stx_atime() {
+             return atime.tv_sec;
+         }
 -        file_attr.as_inner().st_atime as i64
 +        file_attr.as_inner().st_atim.tv_sec as i64
-@@ -373 +373 @@
+     }
+     fn st_atime_nsec(&self) -> i64 {
 -        self.as_inner().as_inner().st_atime_nsec as i64
 +        self.as_inner().as_inner().st_atim.tv_nsec as i64
-@@ -381 +381 @@
+     }
+     fn st_mtime(&self) -> i64 {
+         let file_attr = self.as_inner();
+@@ -378,10 +378,10 @@
+         if let Some(mtime) = file_attr.stx_mtime() {
+             return mtime.tv_sec;
+         }
 -        file_attr.as_inner().st_mtime as i64
 +        file_attr.as_inner().st_mtim.tv_sec as i64
-@@ -384 +384 @@
+     }
+     fn st_mtime_nsec(&self) -> i64 {
 -        self.as_inner().as_inner().st_mtime_nsec as i64
 +        self.as_inner().as_inner().st_mtim.tv_nsec as i64
-@@ -392 +392 @@
+     }
+     fn st_ctime(&self) -> i64 {
+         let file_attr = self.as_inner();
+@@ -389,10 +389,10 @@
+         if let Some(ctime) = file_attr.stx_ctime() {
+             return ctime.tv_sec;
+         }
 -        file_attr.as_inner().st_ctime as i64
 +        file_attr.as_inner().st_ctim.tv_sec as i64
-@@ -395 +395 @@
+     }
+     fn st_ctime_nsec(&self) -> i64 {
 -        self.as_inner().as_inner().st_ctime_nsec as i64
 +        self.as_inner().as_inner().st_ctim.tv_nsec as i64
---- rustc-1.90.0-src.orig/library/std/src/sys/fs/unix.rs
-+++ rustc-1.90.0-src/library/std/src/sys/fs/unix.rs
-@@ -495 +495 @@
+     }
+     fn st_blksize(&self) -> u64 {
+         self.as_inner().as_inner().st_blksize as u64
+--- rustc-1.94.1-src.orig/library/std/src/sys/fs/unix.rs
++++ rustc-1.94.1-src/library/std/src/sys/fs/unix.rs
+@@ -630,7 +630,7 @@
+             }
+         }
+ 
 -        SystemTime::new(self.stat.st_mtime as i64, self.stat.st_mtime_nsec as i64)
 +        SystemTime::new(self.stat.st_mtim.tv_sec as i64, self.stat.st_mtim.tv_nsec as i64)
-@@ -530 +530 @@
+     }
+ 
+     #[cfg(any(
+@@ -665,7 +665,7 @@
+             }
+         }
+ 
 -        SystemTime::new(self.stat.st_atime as i64, self.stat.st_atime_nsec as i64)
 +        SystemTime::new(self.stat.st_atim.tv_sec as i64, self.stat.st_atim.tv_nsec as i64)
-@@ -1513,7 +1513,13 @@
-                 io::ErrorKind::InvalidInput,
-                 "timestamp is too small to set as a file time",
-             )),
--            None => Ok(libc::timespec { tv_sec: 0, tv_nsec: libc::UTIME_OMIT as _ }),
-+            None => {
-+                // libc 1.0 has private ABI padding on 32-bit musl time64.
-+                let mut ts = unsafe { mem::zeroed::<libc::timespec>() };
-+                ts.tv_sec = 0;
-+                ts.tv_nsec = libc::UTIME_OMIT as _;
-+                Ok(ts)
-+            }
-         };
-         cfg_if::cfg_if! {
-             if #[cfg(any(target_os = "redox", target_os = "espidf", target_os = "horizon", target_os = "nuttx"))] {
---- rustc-1.90.0-src.orig/library/std/src/sys/pal/unix/thread.rs
-+++ rustc-1.90.0-src/library/std/src/sys/pal/unix/thread.rs
-@@ -258,10 +258,9 @@
-         // nanosleep will fill in `ts` with the remaining time.
-         unsafe {
-             while secs > 0 || nsecs > 0 {
--                let mut ts = libc::timespec {
--                    tv_sec: cmp::min(libc::time_t::MAX as u64, secs) as libc::time_t,
--                    tv_nsec: nsecs,
--                };
-+                let mut ts = mem::zeroed::<libc::timespec>();
-+                ts.tv_sec = cmp::min(libc::time_t::MAX as u64, secs) as libc::time_t;
-+                ts.tv_nsec = nsecs;
-                 secs -= ts.tv_sec as u64;
-                 let ts_ptr = &raw mut ts;
-                 if libc::nanosleep(ts_ptr, ts_ptr) == -1 {
---- rustc-1.90.0-src.orig/library/std/src/sys/pal/unix/time.rs
-+++ rustc-1.90.0-src/library/std/src/sys/pal/unix/time.rs
+     }
+ 
+     #[cfg(any(
+@@ -1862,7 +1862,13 @@
+             io::ErrorKind::InvalidInput,
+             "timestamp is too small to set as a file time",
+         )),
+-        None => Ok(libc::timespec { tv_sec: 0, tv_nsec: libc::UTIME_OMIT as _ }),
++        None => {
++            // libc 1.0 has private ABI padding on 32-bit musl time64.
++            let mut ts = unsafe { mem::zeroed::<libc::timespec>() };
++            ts.tv_sec = 0;
++            ts.tv_nsec = libc::UTIME_OMIT as _;
++            Ok(ts)
++        }
+     }
+ }
+ 
+--- rustc-1.94.1-src.orig/library/std/src/sys/thread/unix.rs
++++ rustc-1.94.1-src/library/std/src/sys/thread/unix.rs
+@@ -540,10 +540,9 @@
+     // nanosleep will fill in `ts` with the remaining time.
+     unsafe {
+         while secs > 0 || nsecs > 0 {
+-            let mut ts = libc::timespec {
+-                tv_sec: cmp::min(libc::time_t::MAX as u64, secs) as libc::time_t,
+-                tv_nsec: nsecs,
+-            };
++            let mut ts = mem::zeroed::<libc::timespec>();
++            ts.tv_sec = cmp::min(libc::time_t::MAX as u64, secs) as libc::time_t;
++            ts.tv_nsec = nsecs;
+             secs -= ts.tv_sec as u64;
+             let ts_ptr = &raw mut ts;
+             if libc::nanosleep(ts_ptr, ts_ptr) == -1 {
+--- rustc-1.94.1-src.orig/library/std/src/sys/pal/unix/time.rs
++++ rustc-1.94.1-src/library/std/src/sys/pal/unix/time.rs
 @@ -1,3 +1,4 @@
 +use core::mem;
  use core::num::niche_types::Nanoseconds;
  
- use crate::time::Duration;
-@@ -6,8 +7,13 @@
+ use crate::sys::AsInner;
+@@ -7,8 +8,13 @@
  const NSEC_PER_SEC: u64 = 1_000_000_000;
  pub const UNIX_EPOCH: SystemTime = SystemTime { t: Timespec::zero() };
  #[allow(dead_code)] // Used for pthread condvar timeouts
@@ -97,7 +130,7 @@ argv pointee in execvp.  Rust 1.90's standard library still expects the libc
  
  // This additional constant is only used when calling
  // `libc::pthread_cond_timedwait`.
-@@ -196,10 +202,10 @@
+@@ -205,10 +211,10 @@
  
      #[allow(dead_code)]
      pub fn to_timespec(&self) -> Option<libc::timespec> {
@@ -112,9 +145,9 @@ argv pointee in execvp.  Rust 1.90's standard library still expects the libc
      }
  
      // On QNX Neutrino, the maximum timespec for e.g. pthread_cond_timedwait
---- rustc-1.90.0-src.orig/library/std/src/sys/process/unix/unix.rs
-+++ rustc-1.90.0-src/library/std/src/sys/process/unix/unix.rs
-@@ -403,7 +403,10 @@
+--- rustc-1.94.1-src.orig/library/std/src/sys/process/unix/unix.rs
++++ rustc-1.94.1-src/library/std/src/sys/process/unix/unix.rs
+@@ -405,7 +405,10 @@
              *sys::env::environ() = envp.as_ptr();
          }
  

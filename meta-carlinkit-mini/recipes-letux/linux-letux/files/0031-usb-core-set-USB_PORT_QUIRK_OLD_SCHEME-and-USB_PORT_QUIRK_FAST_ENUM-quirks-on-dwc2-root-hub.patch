@@ -1,4 +1,6 @@
 Subject: [PATCH] usb: core: set USB_PORT_QUIRK_OLD_SCHEME and USB_PORT_QUIRK_FAST_ENUM quirks on dwc2 root hub
+Upstream-Status: Pending
+
 
 ---
  drivers/usb/core/port.c | 12 ++++++++++++

@@ -11,7 +11,7 @@ EXTRA_OEMAKE += "-C ${STAGING_KERNEL_DIR} M=${S} KCFLAGS=-O2"
 FILESEXTRAPATHS:prepend := "${THISDIR}/src:"
 SRC_URI = "file://carlinkit_rgb.c file://Makefile"
 
-S = "${WORKDIR}"
+S = "${UNPACKDIR}"
 B = "${WORKDIR}/build"
 
 # do_install() {

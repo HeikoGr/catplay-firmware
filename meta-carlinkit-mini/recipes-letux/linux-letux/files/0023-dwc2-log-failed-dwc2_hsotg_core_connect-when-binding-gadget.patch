@@ -1,4 +1,6 @@
 Subject: [PATCH] dwc2: log failed dwc2_hsotg_core_connect when binding gadget
+Upstream-Status: Pending
+
 
 When binding a gadget to UDC, it is expected that BSESVLD is true immediately or arrives shortly after within an interrupt, after which dwc2_hsotg_core_connect is retried.
 If the PHY is misconfigured, BSESVLD may never arrive, causing confusion without any useful debug messages.

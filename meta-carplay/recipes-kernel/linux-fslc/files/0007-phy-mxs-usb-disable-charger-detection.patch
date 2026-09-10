@@ -1,6 +1,8 @@
 Date: Sun, 7 Sep 2025 19:32:48 +0200
 Subject: [PATCH] phy-mxs-usb: disable charger detection, we don't need it
 
+Upstream-Status: Inappropriate [C2A does not use USB charger detection]
+
 ---
  drivers/usb/phy/phy-mxs-usb.c | 3 +++
  1 file changed, 3 insertions(+)
@@ -21,4 +23,3 @@ index cc4156c1b..fb0b1850f 100644
  
 -- 
 2.51.0
-

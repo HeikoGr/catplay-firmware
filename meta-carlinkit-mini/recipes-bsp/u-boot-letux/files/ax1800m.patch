@@ -1,3 +1,5 @@
+Upstream-Status: Inappropriate [hardware-specific C2A integration]
+
 diff --git a/.dockerignore b/.dockerignore
 new file mode 100644
 index 00000000000..223aee12872
@@ -1759,6 +1761,13 @@ index 00000000000..52021e1ef51
 +#define __HAVE_BUILTIN_BSWAP64__
 +#define __HAVE_BUILTIN_BSWAP16__
 +#endif /* CONFIG_ARCH_USE_BUILTIN_BSWAP */
+diff --git a/include/linux/compiler-gcc15.h b/include/linux/compiler-gcc15.h
+new file mode 100644
+index 00000000000..b5d13e62985
+--- /dev/null
++++ b/include/linux/compiler-gcc15.h
+@@ -0,0 +1 @@
++#include <linux/compiler-gcc14.h>
 diff --git a/lib/hang.c b/lib/hang.c
 index fc1286c0b77..f1696cde011 100644
 --- a/lib/hang.c

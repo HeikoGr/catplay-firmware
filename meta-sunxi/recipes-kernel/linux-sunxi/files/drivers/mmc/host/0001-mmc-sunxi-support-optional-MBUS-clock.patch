@@ -1,0 +1,66 @@
+Date: Thu, 6 Aug 2026 12:36:57 +0200
+Subject: [PATCH 16/21] mmc: sunxi: support optional MBUS clock
+
+Upstream-Status: Pending
+---
+ drivers/mmc/host/sunxi-mmc.c | 16 +++++++++++++++-
+ 1 file changed, 15 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/mmc/host/sunxi-mmc.c b/drivers/mmc/host/sunxi-mmc.c
+index fe4c0f6d73f3..588f35034a7e 100644
+--- a/drivers/mmc/host/sunxi-mmc.c
++++ b/drivers/mmc/host/sunxi-mmc.c
+@@ -276,6 +276,7 @@ struct sunxi_mmc_host {
+ 
+ 	/* clock management */
+ 	struct clk	*clk_ahb;
++	struct clk	*clk_mbus;
+ 	struct clk	*clk_mmc;
+ 	struct clk	*clk_sample;
+ 	struct clk	*clk_output;
+@@ -1241,10 +1242,16 @@ static int sunxi_mmc_enable(struct sunxi_mmc_host *host)
+ 		goto error_assert_reset;
+ 	}
+ 
++	ret = clk_prepare_enable(host->clk_mbus);
++	if (ret) {
++		dev_err(host->dev, "Enable mbus clk err %d\n", ret);
++		goto error_disable_clk_ahb;
++	}
++
+ 	ret = clk_prepare_enable(host->clk_mmc);
+ 	if (ret) {
+ 		dev_err(host->dev, "Enable mmc clk err %d\n", ret);
+-		goto error_disable_clk_ahb;
++		goto error_disable_clk_mbus;
+ 	}
+ 
+ 	ret = clk_prepare_enable(host->clk_output);
+@@ -1275,6 +1282,8 @@ static int sunxi_mmc_enable(struct sunxi_mmc_host *host)
+ 	clk_disable_unprepare(host->clk_output);
+ error_disable_clk_mmc:
+ 	clk_disable_unprepare(host->clk_mmc);
++error_disable_clk_mbus:
++	clk_disable_unprepare(host->clk_mbus);
+ error_disable_clk_ahb:
+ 	clk_disable_unprepare(host->clk_ahb);
+ error_assert_reset:
+@@ -1290,6 +1299,7 @@ static void sunxi_mmc_disable(struct sunxi_mmc_host *host)
+ 	clk_disable_unprepare(host->clk_sample);
+ 	clk_disable_unprepare(host->clk_output);
+ 	clk_disable_unprepare(host->clk_mmc);
++	clk_disable_unprepare(host->clk_mbus);
+ 	clk_disable_unprepare(host->clk_ahb);
+ 
+ 	if (!IS_ERR(host->reset))
+@@ -1319,6 +1329,10 @@ static int sunxi_mmc_resource_request(struct sunxi_mmc_host *host,
+ 		return PTR_ERR(host->clk_ahb);
+ 	}
+ 
++	host->clk_mbus = devm_clk_get_optional(&pdev->dev, "mbus");
++	if (IS_ERR(host->clk_mbus))
++		return PTR_ERR(host->clk_mbus);
++
+ 	host->clk_mmc = devm_clk_get(&pdev->dev, "mmc");
+ 	if (IS_ERR(host->clk_mmc)) {
+ 		dev_err(&pdev->dev, "Could not get mmc clock\n");

@@ -11,7 +11,7 @@ PR = "r2"
 do_install:append() {
     if [ "x${C2A_DROPBEAR_KEY_PREGEN}" = "x1" ]; then
         bbwarn "Adding ssh key pregen"
-        install -Dm 0600 ${WORKDIR}/dropbear_rsa_host_key ${D}${sysconfdir}/dropbear/dropbear_rsa_host_key
+        install -Dm 0600 ${UNPACKDIR}/dropbear_rsa_host_key ${D}${sysconfdir}/dropbear/dropbear_rsa_host_key
     else
         bbwarn "Not adding ssh key pregen"
     fi

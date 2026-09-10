@@ -23,9 +23,9 @@ FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
 
 SRCREV = "6e076049b719ac2ff7ce5c92786a680407b11cdb"
 
-COMPILE_DIR = "${WORKDIR}/git/src/SDIO/driver_fw/driver/aic8800"
-FIRMWARE_DIR = "${WORKDIR}/git/src/SDIO/driver_fw/fw/"
-SRC_DIR = "${WORKDIR}/git"
+SRC_DIR = "${UNPACKDIR}/${BP}"
+COMPILE_DIR = "${SRC_DIR}/src/SDIO/driver_fw/driver/aic8800"
+FIRMWARE_DIR = "${SRC_DIR}/src/SDIO/driver_fw/fw/"
 
 S = "${COMPILE_DIR}"
 B = "${WORKDIR}/build"
@@ -47,8 +47,8 @@ do_patch:prepend() {
 do_patch_aic() {
     # Retries can run do_patch on a partially patched tree.
     # Reset to pristine SRCREV to make patching deterministic.
-    if [ -d ${WORKDIR}/git/.git ] && command -v git >/dev/null 2>&1; then
-        cd ${WORKDIR}/git
+    if [ -d ${SRC_DIR}/.git ] && command -v git >/dev/null 2>&1; then
+        cd ${SRC_DIR}
         git reset --hard ${SRCREV} >/dev/null 2>&1 || git reset --hard >/dev/null 2>&1 || true
         git clean -fd >/dev/null 2>&1 || true
     fi
@@ -56,8 +56,8 @@ do_patch_aic() {
     # Normalize full source tree line endings before debian patch series.
     find ${SRC_DIR} -type f -exec dos2unix {} \; || true
 
-    for i in $(cat ${WORKDIR}/git/debian/patches/series); do 
-        cd ${WORKDIR}/git/ && patch --batch -p1 < ${WORKDIR}/git/debian/patches/$i || (echo "Failed to apply patch $i" && exit 1); 
+    for i in $(cat ${SRC_DIR}/debian/patches/series); do
+        cd ${SRC_DIR}/ && patch --batch -p1 < ${SRC_DIR}/debian/patches/$i || (echo "Failed to apply patch $i" && exit 1);
     done
 }
 

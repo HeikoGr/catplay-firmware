@@ -1,4 +1,6 @@
 Subject: [PATCH v2] mtd: spi-nor: Add support for xt25f128b chip
+Upstream-Status: Pending
+
 ---
  drivers/mtd/spi-nor/spi-nor.c | 4 ++++
  1 file changed, 4 insertions(+)

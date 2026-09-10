@@ -1,0 +1,80 @@
+Date: Wed, 12 Aug 2026 10:10:02 +0200
+Subject: [PATCH] clk: sunxi-ng: add linear P divider mode to ccu_mp
+
+Upstream-Status: Pending
+---
+ drivers/clk/sunxi-ng/ccu_common.h |  1 +
+ drivers/clk/sunxi-ng/ccu_mp.c     |  6 ++++++
+ drivers/clk/sunxi-ng/ccu_mp.h     | 16 ++++++++++++++++
+ 3 files changed, 23 insertions(+)
+
+diff --git a/drivers/clk/sunxi-ng/ccu_common.h b/drivers/clk/sunxi-ng/ccu_common.h
+index bbec283b9d99..1c4fa24d18ce 100644
+--- a/drivers/clk/sunxi-ng/ccu_common.h
++++ b/drivers/clk/sunxi-ng/ccu_common.h
+@@ -21,6 +21,7 @@
+ #define CCU_FEATURE_CLOSEST_RATE	BIT(9)
+ #define CCU_FEATURE_DUAL_DIV		BIT(10)
+ #define CCU_FEATURE_UPDATE_BIT		BIT(11)
++#define CCU_FEATURE_MP_NO_INDEX_MODE	BIT(12)
+ 
+ /* MMC timing mode switch bit */
+ #define CCU_MMC_NEW_TIMING_MODE		BIT(30)
+diff --git a/drivers/clk/sunxi-ng/ccu_mp.c b/drivers/clk/sunxi-ng/ccu_mp.c
+index eca5a3cd1190..16d1061368e9 100644
+--- a/drivers/clk/sunxi-ng/ccu_mp.c
++++ b/drivers/clk/sunxi-ng/ccu_mp.c
+@@ -117,6 +117,8 @@ static int ccu_mp_determine_rate_helper(struct ccu_mux_internal *mux,
+ 
+ 	if (cmp->common.features & CCU_FEATURE_DUAL_DIV)
+ 		shift = false;
++	if (cmp->common.features & CCU_FEATURE_MP_NO_INDEX_MODE)
++		shift = false;
+ 
+ 	max_m = cmp->m.max ?: 1 << cmp->m.width;
+ 	if (shift)
+@@ -186,6 +188,8 @@ static unsigned long ccu_mp_recalc_rate(struct clk_hw *hw,
+ 
+ 	if (cmp->common.features & CCU_FEATURE_DUAL_DIV)
+ 		rate = (parent_rate / (p + cmp->p.offset)) / m;
++	else if (cmp->common.features & CCU_FEATURE_MP_NO_INDEX_MODE)
++		rate = (parent_rate / (p + cmp->p.offset)) / m;
+ 	else
+ 		rate = (parent_rate >> p) / m;
+ 
+@@ -216,6 +220,8 @@ static int ccu_mp_set_rate(struct clk_hw *hw, unsigned long rate,
+ 
+ 	if (cmp->common.features & CCU_FEATURE_DUAL_DIV)
+ 		shift = false;
++	if (cmp->common.features & CCU_FEATURE_MP_NO_INDEX_MODE)
++		shift = false;
+ 
+ 	/* Adjust parent_rate according to pre-dividers */
+ 	parent_rate = ccu_mux_helper_apply_prediv(&cmp->common, &cmp->mux, -1,
+diff --git a/drivers/clk/sunxi-ng/ccu_mp.h b/drivers/clk/sunxi-ng/ccu_mp.h
+index bb09c649bfa3..a68ea786424a 100644
+--- a/drivers/clk/sunxi-ng/ccu_mp.h
++++ b/drivers/clk/sunxi-ng/ccu_mp.h
+@@ -31,6 +31,22 @@ struct ccu_mp {
+ 	struct ccu_common	common;
+ };
+ 
++#define SUNXI_CCU_MP_WITH_MUX_GATE_NO_INDEX(_struct, _name, _parents, _reg, \
++					   _mshift, _mwidth, _pshift, _pwidth, \
++					   _muxshift, _muxwidth, _gate, _flags)	\
++	struct ccu_mp _struct = {					\
++		.enable = _gate,					\
++		.m = _SUNXI_CCU_DIV(_mshift, _mwidth),		\
++		.p = _SUNXI_CCU_DIV(_pshift, _pwidth),		\
++		.mux = _SUNXI_CCU_MUX(_muxshift, _muxwidth),	\
++		.common = {						\
++			.reg = _reg,					\
++			.features = CCU_FEATURE_MP_NO_INDEX_MODE,	\
++			.hw.init = CLK_HW_INIT_PARENTS(_name, _parents,\
++							      &ccu_mp_ops, _flags),	\
++		}							\
++	}
++
+ #define SUNXI_CCU_MP_WITH_MUX_GATE_POSTDIV(_struct, _name, _parents, _reg, \
+ 					   _mshift, _mwidth,		\
+ 					   _pshift, _pwidth,		\

@@ -1,6 +1,8 @@
 Date: Sun, 28 Sep 2025 18:12:53 +0200
 Subject: [PATCH] Fix duplicate macro definitions preventing LTO builds on MIPS
 
+Upstream-Status: Inappropriate [C2A workaround disables CPUCFG probing]
+
 ---
  libavutil/mips/asmdefs.h | 4 ++--
  libavutil/mips/cpu.c     | 5 +++--
@@ -53,4 +55,3 @@ index 2009c70f71..68b6466e48 100644
  #define LOONGSON_CFG1 0x1
 -- 
 2.51.0
-

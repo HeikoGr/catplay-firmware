@@ -1,5 +1,7 @@
 Date: Wed, 19 Aug 2026 11:04:21 +0200
 Subject: [PATCH] dmaengine: jz4780: gate controller clock around transfers
+Upstream-Status: Pending
+
 
 Keeping the PDMA provider clock enabled for the lifetime of the driver
 wastes power while no DMA transfer is active.

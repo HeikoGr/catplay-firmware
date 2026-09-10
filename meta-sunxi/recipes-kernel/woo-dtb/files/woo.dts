@@ -1,0 +1,168 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/dts-v1/;
+
+#include "sun300i-v821b.dtsi"
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+
+/ {
+	model = "Wooboobox V821B-compatible dongle";
+	compatible = "allwinner,v821b", "allwinner,v821", "allwinner,sun300iw1p1";
+
+	chosen {
+		bootargs = "c2a_no_ovl console= _console=ttyGS0,115200 random.trust_bootloader=on root=/dev/mtdblock_bbt_ro2 rootfstype=erofs init=/usr/bin/carlinkit_otalib ro";
+		rng-seed = [
+			12 34 56 78 9a bc de f0 01 23 45 67 89 ab cd ef
+			91 82 73 64 55 46 37 28 19 2a 3b 4c 5d 6e 7f 80
+		];
+	};
+
+	reg_vcc_wifi: regulator-vcc-wifi {
+		compatible = "regulator-fixed";
+		regulator-name = "vcc_wifi";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		gpio = <&pio 3 11 GPIO_ACTIVE_HIGH>;
+
+		/* wifi_en_gpio: PD11 */
+		enable-active-high;
+	};
+
+	wifi_pwrseq: wifi-pwrseq {
+		/* This seems to do nothing on this PCB; there's no real WL_REG_ON */
+		/* Not sure what "en2" originally refers to. */
+		compatible = "mmc-pwrseq-simple";
+		reset-gpios = <&pio 3 17 GPIO_ACTIVE_LOW>;
+
+		/* wifi_en2_gpio: PD17 */
+		post-power-on-delay-ms = <100>;
+		power-off-delay-us = <5000000>;
+	};
+
+	memory@80000000 {
+		device_type = "memory";
+		reg = <0x0 0x80000000 0x0 0x04000000>;
+	};
+
+	/*gpio_keys: gpio-keys {
+		compatible = "gpio-keys";
+
+		debug-button {
+			label = "debug-button";
+			gpios = <&pio 2 16 GPIO_ACTIVE_LOW>; // PC16
+			linux,input-type = <EV_KEY>;
+			linux,code = <KEY_PROG1>;
+			debounce-interval = <20>;
+		};
+	};*/
+};
+
+&usbphy {
+	/* CarPlay vendor tuning */
+	allwinner,rise-tune = <2>;
+	allwinner,tx-tune = <8>;
+	allwinner,preemp-amp-tune = <3>;
+};
+
+&usb_otg {
+	dr_mode = "peripheral";
+	usb-role-switch;
+	status = "okay";
+};
+
+&spif0 {
+	allwinner,sample-mode = <0>;
+	allwinner,sample-delay = <25>;
+	status = "okay";
+
+	flash@0 {
+		compatible = "jedec,spi-nor";
+		reg = <0>;
+		spi-max-frequency = <100000000>;
+		spi-rx-bus-width = <4>;
+		spi-tx-bus-width = <4>;
+
+		partitions {
+			compatible = "fixed-partitions";
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			boot0@0 {
+				label = "boot0";
+				reg = <0x00000000 0x00040000>;
+
+				/* 256KB */
+			};
+
+			kernel@40000 {
+				label = "kernel";
+				reg = <0x00040000 0x00400000>;
+
+				/* 4MB */
+			};
+
+			initrd@440000 {
+				label = "initrd";
+				reg = <0x00440000 0x00b00000>;
+
+				/* 11MB */
+			};
+
+			persist@f40000 {
+				label = "persist";
+				reg = <0x00f40000 0x000c0000>;
+
+				/* 768KB */
+			};
+		};
+	};
+};
+
+&mmc1 {
+	max-frequency = <50000000>;
+	bus-width = <4>;
+	non-removable;
+	cap-sd-highspeed;
+	cap-sdio-irq;
+	ignore-pm-notify;
+	keep-power-in-suspend;
+
+	vmmc-supply = <&reg_vcc_wifi>;
+	mmc-pwrseq = <&wifi_pwrseq>;
+	status = "okay";
+	no-mmc;
+	no-sd;
+};
+
+&i2c1 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&twi1_pd_pins>;
+	clock-frequency = <100000>;
+	status = "okay";
+};
+
+&wdt {
+	status = "disabled";
+};
+
+&uart0 {
+	status = "disabled";
+};
+
+&uart1 {
+	/* bluetooth */
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart1_pd_pins>;
+	uart-has-rtscts;
+	status = "okay";
+
+	bluetooth {
+		compatible = "realtek,rtl8733bs-bt";
+	};
+};
+
+&cpu_opp_table {
+	opp-1000000000 {
+		status = "okay";
+	};
+};

@@ -1,6 +1,8 @@
 Date: Sun, 28 Sep 2025 12:01:51 +0200
 Subject: [PATCH] Fix CLang-LTO build on MIPS
 
+Upstream-Status: Inappropriate [C2A Clang/LTO configuration workaround]
+
 This does not affect ARM, because it seems like ARM can create .o files
 with both LLVM bitcode and normal code inside, and MIPS in the same setup only ships the LLVM bitcode,
 creatings false positives in tests that shouldn't use this mode.
@@ -33,4 +35,3 @@ index 732de59292..5fc76e2280 100755
  check_ld(){
 -- 
 2.51.0
-

@@ -1,0 +1,305 @@
+Date: Wed, 12 Aug 2026 10:10:02 +0200
+Subject: [PATCH] clk: sunxi-ng: backport vendor ccu_nm PLL extensions
+
+Upstream-Status: Pending
+---
+ drivers/clk/sunxi-ng/ccu_gate.c |  12 ++++
+ drivers/clk/sunxi-ng/ccu_gate.h |   2 +
+ drivers/clk/sunxi-ng/ccu_nm.c   | 115 ++++++++++++++++++++++++++++----
+ drivers/clk/sunxi-ng/ccu_nm.h   |   4 ++
+ 4 files changed, 119 insertions(+), 14 deletions(-)
+
+diff --git a/drivers/clk/sunxi-ng/ccu_gate.c b/drivers/clk/sunxi-ng/ccu_gate.c
+index 30673fe4e3c2..36f6f1714e4b 100644
+--- a/drivers/clk/sunxi-ng/ccu_gate.c
++++ b/drivers/clk/sunxi-ng/ccu_gate.c
+@@ -9,6 +9,18 @@
+ 
+ #include "ccu_gate.h"
+ 
++void ccu_pll_output_helper_disable(struct ccu_common *common, u32 output)
++{
++	ccu_gate_helper_disable(common, output);
++}
++EXPORT_SYMBOL_NS_GPL(ccu_pll_output_helper_disable, "SUNXI_CCU");
++
++void ccu_pll_output_helper_enable(struct ccu_common *common, u32 output)
++{
++	ccu_gate_helper_enable(common, output);
++}
++EXPORT_SYMBOL_NS_GPL(ccu_pll_output_helper_enable, "SUNXI_CCU");
++
+ void ccu_gate_helper_disable(struct ccu_common *common, u32 gate)
+ {
+ 	unsigned long flags;
+diff --git a/drivers/clk/sunxi-ng/ccu_gate.h b/drivers/clk/sunxi-ng/ccu_gate.h
+index dc05ce06737a..41d427093c64 100644
+--- a/drivers/clk/sunxi-ng/ccu_gate.h
++++ b/drivers/clk/sunxi-ng/ccu_gate.h
+@@ -121,6 +121,8 @@ static inline struct ccu_gate *hw_to_ccu_gate(struct clk_hw *hw)
+ void ccu_gate_helper_disable(struct ccu_common *common, u32 gate);
+ int ccu_gate_helper_enable(struct ccu_common *common, u32 gate);
+ int ccu_gate_helper_is_enabled(struct ccu_common *common, u32 gate);
++void ccu_pll_output_helper_disable(struct ccu_common *common, u32 output);
++void ccu_pll_output_helper_enable(struct ccu_common *common, u32 output);
+ 
+ extern const struct clk_ops ccu_gate_ops;
+ 
+diff --git a/drivers/clk/sunxi-ng/ccu_nm.c b/drivers/clk/sunxi-ng/ccu_nm.c
+index df01ed3b37a6..f0665109779a 100644
+--- a/drivers/clk/sunxi-ng/ccu_nm.c
++++ b/drivers/clk/sunxi-ng/ccu_nm.c
+@@ -5,5 +5,6 @@
+  */
+ 
+ #include <linux/clk-provider.h>
++#include <linux/delay.h>
+ #include <linux/io.h>
+ 
+@@ -16,8 +17,47 @@ struct _ccu_nm {
+ 	unsigned long	m, min_m, max_m;
+ };
+ 
+-static unsigned long ccu_nm_calc_rate(unsigned long parent,
+-				      unsigned long n, unsigned long m)
++/*
++ * Vendor standard CCU code does not accept the first asserted lock sample.
++ * The old lock value may remain visible briefly after changing PLL factors,
++ * so require three consecutive samples and then allow the PLL to settle.
++ */
++static void ccu_nm_wait_for_stable_lock(struct ccu_nm *nm)
++{
++    struct ccu_common *common = &nm->common;
++    void __iomem *addr;
++    unsigned int read_times = 0;
++    unsigned int lock_times = 0;
++
++    if (!nm->lock)
++        return;
++
++    if (!nm->output) {
++        ccu_helper_wait_for_lock(common, nm->lock);
++        return;
++    }
++
++    addr = common->features & CCU_FEATURE_LOCK_REG ?
++        common->base + common->lock_reg :
++        common->base + common->reg;
++
++    while (read_times++ < 100 && lock_times < 3) {
++        if (readl(addr) & nm->lock)
++            lock_times++;
++        else
++            lock_times = 0;
++        udelay(3);
++    }
++
++    if (lock_times == 3)
++        udelay(20);
++    else
++        WARN(1, "%s failed to reach stable PLL lock\n",
++             clk_hw_get_name(&common->hw));
++}
++
++static u64 ccu_nm_calc_rate(unsigned long parent,
++			    unsigned long n, unsigned long m)
+ {
+ 	u64 rate = parent;
+ 
+@@ -36,8 +76,10 @@ static unsigned long ccu_nm_find_best(struct ccu_common *common, unsigned long p
+ 
+ 	for (_n = nm->min_n; _n <= nm->max_n; _n++) {
+ 		for (_m = nm->min_m; _m <= nm->max_m; _m++) {
+-			unsigned long tmp_rate = ccu_nm_calc_rate(parent,
+-								  _n, _m);
++			u64 tmp_rate = ccu_nm_calc_rate(parent, _n, _m);
++
++			if (tmp_rate > ULONG_MAX)
++				continue;
+ 
+ 			if (ccu_is_better_rate(common, rate, tmp_rate, best_rate)) {
+ 				best_rate = tmp_rate;
+@@ -57,14 +99,32 @@ static void ccu_nm_disable(struct clk_hw *hw)
+ {
+ 	struct ccu_nm *nm = hw_to_ccu_nm(hw);
+ 
+-	return ccu_gate_helper_disable(&nm->common, nm->enable);
++	ccu_pll_output_helper_disable(&nm->common, nm->output);
++	ccu_gate_helper_disable(&nm->common, nm->lock_enable);
++	ccu_gate_helper_disable(&nm->common, nm->enable);
++	ccu_gate_helper_disable(&nm->common, nm->ldo_en);
+ }
+ 
+ static int ccu_nm_enable(struct clk_hw *hw)
+ {
+ 	struct ccu_nm *nm = hw_to_ccu_nm(hw);
++	u32 reg;
++
++	if (nm->output && nm->ldo_en) {
++		reg = readl(nm->common.base + nm->common.reg);
++		if ((reg & nm->enable) && (reg & nm->output) &&
++		    (reg & nm->ldo_en))
++			return 0;
++	}
+ 
+-	return ccu_gate_helper_enable(&nm->common, nm->enable);
++	ccu_pll_output_helper_disable(&nm->common, nm->output);
++	ccu_gate_helper_enable(&nm->common, nm->ldo_en);
++	ccu_gate_helper_enable(&nm->common, nm->enable);
++	ccu_gate_helper_enable(&nm->common, nm->lock_enable);
++	ccu_nm_wait_for_stable_lock(nm);
++	ccu_pll_output_helper_enable(&nm->common, nm->output);
++
++	return 0;
+ }
+ 
+ static int ccu_nm_is_enabled(struct clk_hw *hw)
+@@ -78,15 +138,18 @@ static unsigned long ccu_nm_recalc_rate(struct clk_hw *hw,
+ 					unsigned long parent_rate)
+ {
+ 	struct ccu_nm *nm = hw_to_ccu_nm(hw);
+-	unsigned long rate;
++	u64 rate;
+ 	unsigned long n, m;
+ 	u32 reg;
+ 
+ 	if (ccu_frac_helper_is_enabled(&nm->common, &nm->frac)) {
+ 		rate = ccu_frac_helper_read_rate(&nm->common, &nm->frac);
+ 
++		if (nm->common.features & CCU_FEATURE_FIXED_PREDIV)
++			rate *= nm->fixed_pre_div;
++
+ 		if (nm->common.features & CCU_FEATURE_FIXED_POSTDIV)
+-			rate /= nm->fixed_post_div;
++			do_div(rate, nm->fixed_post_div);
+ 
+ 		return rate;
+ 	}
+@@ -110,8 +173,11 @@ static unsigned long ccu_nm_recalc_rate(struct clk_hw *hw,
+ 	else
+ 		rate = ccu_nm_calc_rate(parent_rate, n, m);
+ 
++	if (nm->common.features & CCU_FEATURE_FIXED_PREDIV)
++		rate *= nm->fixed_pre_div;
++
+ 	if (nm->common.features & CCU_FEATURE_FIXED_POSTDIV)
+-		rate /= nm->fixed_post_div;
++		do_div(rate, nm->fixed_post_div);
+ 
+ 	return rate;
+ }
+@@ -124,11 +190,15 @@ static int ccu_nm_determine_rate(struct clk_hw *hw,
+ 
+ 	if (nm->common.features & CCU_FEATURE_FIXED_POSTDIV)
+ 		req->rate *= nm->fixed_post_div;
++	if (nm->common.features & CCU_FEATURE_FIXED_PREDIV)
++		req->rate /= nm->fixed_pre_div;
+ 
+ 	if (req->rate < nm->min_rate) {
+ 		req->rate = nm->min_rate;
+ 		if (nm->common.features & CCU_FEATURE_FIXED_POSTDIV)
+ 			req->rate /= nm->fixed_post_div;
++		if (nm->common.features & CCU_FEATURE_FIXED_PREDIV)
++			req->rate *= nm->fixed_pre_div;
+ 		return 0;
+ 	}
+ 
+@@ -136,18 +206,24 @@ static int ccu_nm_determine_rate(struct clk_hw *hw,
+ 		req->rate = nm->max_rate;
+ 		if (nm->common.features & CCU_FEATURE_FIXED_POSTDIV)
+ 			req->rate /= nm->fixed_post_div;
++		if (nm->common.features & CCU_FEATURE_FIXED_PREDIV)
++			req->rate *= nm->fixed_pre_div;
+ 		return 0;
+ 	}
+ 
+ 	if (ccu_frac_helper_has_rate(&nm->common, &nm->frac, req->rate)) {
+ 		if (nm->common.features & CCU_FEATURE_FIXED_POSTDIV)
+ 			req->rate /= nm->fixed_post_div;
++		if (nm->common.features & CCU_FEATURE_FIXED_PREDIV)
++			req->rate *= nm->fixed_pre_div;
+ 		return 0;
+ 	}
+ 
+ 	if (ccu_sdm_helper_has_rate(&nm->common, &nm->sdm, req->rate)) {
+ 		if (nm->common.features & CCU_FEATURE_FIXED_POSTDIV)
+ 			req->rate /= nm->fixed_post_div;
++		if (nm->common.features & CCU_FEATURE_FIXED_PREDIV)
++			req->rate *= nm->fixed_pre_div;
+ 		return 0;
+ 	}
+ 
+@@ -161,6 +237,8 @@ static int ccu_nm_determine_rate(struct clk_hw *hw,
+ 
+ 	if (nm->common.features & CCU_FEATURE_FIXED_POSTDIV)
+ 		req->rate /= nm->fixed_post_div;
++	if (nm->common.features & CCU_FEATURE_FIXED_PREDIV)
++		req->rate *= nm->fixed_pre_div;
+ 
+ 	return 0;
+ }
+@@ -176,6 +254,8 @@ static int ccu_nm_set_rate(struct clk_hw *hw, unsigned long rate,
+ 	/* Adjust target rate according to post-dividers */
+ 	if (nm->common.features & CCU_FEATURE_FIXED_POSTDIV)
+ 		rate = rate * nm->fixed_post_div;
++	if (nm->common.features & CCU_FEATURE_FIXED_PREDIV)
++		rate /= nm->fixed_pre_div;
+ 
+ 	if (ccu_frac_helper_has_rate(&nm->common, &nm->frac, rate)) {
+ 		spin_lock_irqsave(nm->common.lock, flags);
+@@ -211,19 +291,26 @@ static int ccu_nm_set_rate(struct clk_hw *hw, unsigned long rate,
+ 		ccu_nm_find_best(&nm->common, parent_rate, rate, &_nm);
+ 	}
+ 
++	ccu_pll_output_helper_disable(&nm->common, nm->output);
++
+ 	spin_lock_irqsave(nm->common.lock, flags);
+ 
+ 	reg = readl(nm->common.base + nm->common.reg);
+-	reg &= ~GENMASK(nm->n.width + nm->n.shift - 1, nm->n.shift);
+-	reg &= ~GENMASK(nm->m.width + nm->m.shift - 1, nm->m.shift);
++	if (nm->n.width)
++		reg &= ~GENMASK(nm->n.width + nm->n.shift - 1, nm->n.shift);
++	if (nm->m.width)
++		reg &= ~GENMASK(nm->m.width + nm->m.shift - 1, nm->m.shift);
+ 
+-	reg |= (_nm.n - nm->n.offset) << nm->n.shift;
+-	reg |= (_nm.m - nm->m.offset) << nm->m.shift;
++	if (nm->n.width)
++		reg |= (_nm.n - nm->n.offset) << nm->n.shift;
++	if (nm->m.width)
++		reg |= (_nm.m - nm->m.offset) << nm->m.shift;
+ 	writel(reg, nm->common.base + nm->common.reg);
+ 
+ 	spin_unlock_irqrestore(nm->common.lock, flags);
+ 
+-	ccu_helper_wait_for_lock(&nm->common, nm->lock);
++	ccu_nm_wait_for_stable_lock(nm);
++	ccu_pll_output_helper_enable(&nm->common, nm->output);
+ 
+ 	return 0;
+ }
+diff --git a/drivers/clk/sunxi-ng/ccu_nm.h b/drivers/clk/sunxi-ng/ccu_nm.h
+index 93c11693574f..f7eb108c182d 100644
+--- a/drivers/clk/sunxi-ng/ccu_nm.h
++++ b/drivers/clk/sunxi-ng/ccu_nm.h
+@@ -20,8 +20,11 @@
+  * Clocks based on the formula parent * N / M
+  */
+ struct ccu_nm {
++	u32			output;
+ 	u32			enable;
+ 	u32			lock;
++	u32			lock_enable;
++	u32			ldo_en;
+ 
+ 	struct ccu_mult_internal	n;
+ 	struct ccu_div_internal		m;
+@@ -29,6 +32,7 @@ struct ccu_nm {
+ 	struct ccu_sdm_internal		sdm;
+ 
+ 	unsigned int		fixed_post_div;
++	unsigned int		fixed_pre_div;
+ 	unsigned int		min_rate;
+ 	unsigned int		max_rate;
+ 

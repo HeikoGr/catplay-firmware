@@ -1,5 +1,7 @@
 Date: Mon, 16 Feb 2026 12:12:06 +0100
 Subject: [PATCH 2/2] x1600: add support for early printk on UART2
+Upstream-Status: Pending
+
 
 earlycon is broken for some reason; this is the only possibility of getting reliable early boot logs on this platform 
 ---

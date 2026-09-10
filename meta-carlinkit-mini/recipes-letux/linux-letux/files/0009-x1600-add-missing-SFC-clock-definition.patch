@@ -1,4 +1,6 @@
 Subject: [PATCH] x1600: add missing SFC clock definition
+Upstream-Status: Pending
+
 
 diff --git a/arch/mips/boot/dts/ingenic/x1600.dtsi b/arch/mips/boot/dts/ingenic/x1600.dtsi
 index f885c3d33..bd4bd7992 100644

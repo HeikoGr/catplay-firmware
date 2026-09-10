@@ -1,3 +1,5 @@
+Upstream-Status: Inappropriate [product-specific configuration]
+
 diff --git a/Makefile b/Makefile
 index 6f02ee9..f6d0a39 100644
 --- a/Makefile

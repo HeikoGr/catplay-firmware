@@ -1,5 +1,7 @@
 Date: Fri, 26 Jun 2026 00:00:00 +0000
 Subject: [PATCH] mips: ingenic: drain bridge after DMA cache sync
+Upstream-Status: Pending
+
 
 Vendor XBurst kernels enable MIPS_BRIDGE_SYNC_WAR for Ingenic SoCs and
 finish S-cache DMA maintenance with an uncached read through __fast_iob().

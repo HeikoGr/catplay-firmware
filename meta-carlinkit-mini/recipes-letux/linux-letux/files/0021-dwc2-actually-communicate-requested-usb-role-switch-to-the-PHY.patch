@@ -1,4 +1,6 @@
 Subject: [PATCH] dwc2: actually communicate requested usb-role-switch to the PHY
+Upstream-Status: Pending
+
 
 diff --git a/drivers/usb/dwc2/drd.c b/drivers/usb/dwc2/drd.c
 index 1ad8fa3f862a..24bf12dd9cf8 100644

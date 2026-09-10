@@ -1,6 +1,8 @@
 Date: Sun, 28 Sep 2025 19:27:20 +0200
 Subject: [PATCH] Add optimization flags for Ingenic X1600
 
+Upstream-Status: Inappropriate [C2A-specific Ingenic CPU profile]
+
 ---
  configure | 8 ++++++++
  1 file changed, 8 insertions(+)
@@ -26,4 +28,3 @@ index 732de59292..eee1ec91bd 100755
              ;;
 -- 
 2.51.0
-

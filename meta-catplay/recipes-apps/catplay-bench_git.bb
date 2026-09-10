@@ -6,7 +6,7 @@ inherit catplay-src-bundle-local
 
 FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
 
-S = "${WORKDIR}"
+S = "${UNPACKDIR}"
 
 CARGO_SRC_DIR = "core/catplay_hap"
 DEPENDS += "openssl-slim"

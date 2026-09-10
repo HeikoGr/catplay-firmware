@@ -1,4 +1,6 @@
 Subject: [PATCH] phy-ingenic-usb: fix incorrect PHY tuning
+Upstream-Status: Pending
+
 
 Letux enforces strict ASERFTUNE = 5V, meaning that if voltage on data pins drops below 5V(with what margin? nobody knows, it's not documented anywhere) the other side is considered disconnected.
 When acting as a CarPlay dongle, automotive systems simply cannot keep up with such a requirement, resulting in a failed role-switch and a loop of reconnects that's not visible

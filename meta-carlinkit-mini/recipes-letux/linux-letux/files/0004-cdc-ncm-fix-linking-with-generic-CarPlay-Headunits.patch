@@ -1,5 +1,7 @@
 Date: Tue, 2 Sep 2025 02:29:33 +0200
 Subject: [PATCH] cdc-ncm: fix linking with generic CarPlay Headunits
+Upstream-Status: Pending
+
 Patch tested on:
 
 Product: MB Infotainment

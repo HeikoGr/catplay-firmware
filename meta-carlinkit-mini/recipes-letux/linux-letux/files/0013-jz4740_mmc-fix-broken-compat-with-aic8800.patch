@@ -1,4 +1,6 @@
 Subject: [PATCH] jz4740_mmc: fix broken compat with aic8800
+Upstream-Status: Pending
+
 
 diff --git a/drivers/mmc/host/jz4740_mmc.c b/drivers/mmc/host/jz4740_mmc.c
 index b19d0c8eb..90ac5e7e4 100644

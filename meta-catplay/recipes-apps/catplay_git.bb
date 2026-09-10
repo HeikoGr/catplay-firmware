@@ -8,7 +8,7 @@ RDEPENDS:${PN} += "catplay-g-iphone"
 
 FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
 
-S = "${WORKDIR}"
+S = "${UNPACKDIR}"
 
 CARGO_SRC_DIR = "c2a/catplay_c2a"
 #EXCLUDE_FROM_SHLIBS = "1"

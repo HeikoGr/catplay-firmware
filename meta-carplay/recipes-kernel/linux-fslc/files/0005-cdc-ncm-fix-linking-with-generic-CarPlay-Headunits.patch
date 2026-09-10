@@ -6,6 +6,9 @@ Product: MB Infotainment
 Manufacturer: Daimler AG
 idVendor: 0x25e1
 idProduct: 0x4351
+
+Upstream-Status: Pending
+
 ---
  drivers/net/usb/cdc_ncm.c   | 83 ++++++++++++++++++++++++++++++-------
  drivers/net/usb/usbnet.c    |  2 +-
@@ -187,4 +190,3 @@ index 4ac082a63173..a0dda6028bad 100644
  				       (x)->desc.bInterfaceProtocol == USB_CDC_PROTO_NONE)
 -- 
 2.52.0
-

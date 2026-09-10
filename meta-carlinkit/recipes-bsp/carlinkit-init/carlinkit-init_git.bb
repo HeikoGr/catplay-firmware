@@ -5,7 +5,7 @@ LIC_FILES_CHKSUM = "file://${COREBASE}/meta/files/common-licenses/MIT;md5=0835ad
 SRC_URI += "file://carlinkit-init.sh"
 SRC_URI += "file://init.sh"
 
-S = "${WORKDIR}"
+S = "${UNPACKDIR}"
 
 TARGET_DIR = "${nonarch_libdir}/${PN}/"
 
@@ -13,7 +13,7 @@ do_install() {
     install -Dm 0755 ${S}/carlinkit-init.sh ${D}/${sysconfdir}/init.d/carlinkit-init
 
     for i in $(echo init.sh); do
-        install -Dm 0755 ${WORKDIR}/${i} ${D}/${TARGET_DIR}/${i};
+        install -Dm 0755 ${UNPACKDIR}/${i} ${D}/${TARGET_DIR}/${i};
     done
 }
 

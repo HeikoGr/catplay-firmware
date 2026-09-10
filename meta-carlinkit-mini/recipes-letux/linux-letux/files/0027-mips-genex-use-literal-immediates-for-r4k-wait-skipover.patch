@@ -1,4 +1,6 @@
 Subject: [PATCH] mips: genex: use literal immediates for r4k wait skipover
+Upstream-Status: Pending
+
 
 LLVM's MIPS assembler does not accept assembler-computed label expressions
 directly as immediate operands for the two-operand ori/addiu aliases:

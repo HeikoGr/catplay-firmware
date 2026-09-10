@@ -1,0 +1,54 @@
+Subject: firmware: add legacy Brandy header layout
+
+Add the legacy Allwinner Brandy firmware header and entry layout required
+by the V821 boot chain.
+
+Upstream-Status: Pending
+---
+diff --git a/firmware/fw_base.ldS b/firmware/fw_base.ldS
+--- a/firmware/fw_base.ldS
++++ b/firmware/fw_base.ldS
+@@ -6,14 +6,42 @@
+  * Authors:
+  *   Anup Patel <anup.patel@wdc.com>
+  */
+ 
+ 	. = FW_TEXT_START;
+-	/* Don't add any section between FW_TEXT_START and _fw_start */
++	/* Keep _fw_start at the actual firmware/load base for relocation. */
+ 	PROVIDE(_fw_start = .);
+ 
++#ifdef CONFIG_PLATFORM_ALLWINNER_V821
++	/*
++	 * Allwinner Brandy private OpenSBI header. Brandy checks the magic,
++	 * writes fw_dynamic_info at FW_TEXT_START + 0x30 and jumps to
++	 * FW_TEXT_START. The first instruction jumps to the real firmware
++	 * entry at +0x400.
++	 */
++	.head : {
++		LONG(0x4000006f) /* jal x0, +0x400 */
++
++		/* magic[8] = "opensbi\0" */
++		BYTE(0x6f) BYTE(0x70) BYTE(0x65) BYTE(0x6e)
++		BYTE(0x73) BYTE(0x62) BYTE(0x69) BYTE(0x00)
++
++		/* dtb_base, uboot_base, res3, res4 */
++		LONG(0) LONG(0) LONG(0) LONG(0)
++
++		/* res5[8], res6[8] */
++		LONG(0) LONG(0) LONG(0) LONG(0)
++
++		/* opensbi_base */
++		LONG(FW_TEXT_START)
++	}
++
++	/* Keep 0x30..0x3ff free for Brandy's fw_dynamic_info. */
++	. = FW_TEXT_START + 0x400;
++#else
+ 	. = ALIGN(0x1000); /* Need this to create proper sections */
++#endif
+ 
+ 	/* Beginning of the code section */
+ 
+ 	.text :
+  	{

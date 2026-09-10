@@ -17,8 +17,6 @@ PV = "${LINUX_VERSION}+git${SRCPV}"
 
 SRC_URI = "git://github.com/nxp-imx/linux-imx;protocol=https;branch=${SRCBRANCH}"
 
-S = "${WORKDIR}/git"
-
 # Tell to kernel class that we would like to use our defconfig to configure the kernel.
 # Otherwise, the --allnoconfig would be used per default which leads to mis-configured
 # kernel.
@@ -31,7 +29,7 @@ S = "${WORKDIR}/git"
 # specified, and should be restored with their defaults, not set to 'n'.
 # To properly expand a defconfig like this, we need to specify: KCONFIG_MODE="--alldefconfig"
 # in the kernel recipe include.
-KCONFIG_MODE="--alldefconfig"
+KCONFIG_MODE = "--alldefconfig"
 
 # We need to pass it as param since kernel might support more then one
 # machine, with different entry points
