@@ -284,7 +284,7 @@ def read_file(path: Path) -> bytes:
         raise X1600UsbBootError(f"Failed to read {path}: {e}") from e
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="X1600 USB boot loader: SPL -> uImage kernel + initramfs -> jump to kernel"
     )
@@ -375,7 +375,7 @@ def parse_args() -> argparse.Namespace:
         default=20.0,
         help="How many seconds to wait for SSH port on gadget IP",
     )
-    return p.parse_args()
+    return p.parse_args(argv)
 
 
 def format_ascii(data: bytes) -> str:
