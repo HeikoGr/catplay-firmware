@@ -1,0 +1,54 @@
+{
+  // ---------------------------------------------------------------
+  // Yocto-Build-Artefakte von Indizierung / Watching ausnehmen.
+  // Ohne das laufen Pylance und der File-Watcher in Limits
+  // (build/tmp/work enthält komplett entpackte Upstream-Sourcen).
+  // ---------------------------------------------------------------
+
+  // Pylance / Python-Analyse: diese Pfade gar nicht erst indizieren
+  "python.analysis.exclude": [
+    "**/build/**",
+    "**/build-*/**",
+    "**/.sources/**",
+    "**/sstate-cache/**",
+    "**/downloads/**",
+    "**/tmp/**",
+    "**/node_modules/**",
+    "**/__pycache__/**",
+    "**/.git/**"
+  ],
+  // Diagnostik nur für geöffnete Dateien (kein Workspace-weiter Scan)
+  "python.analysis.diagnosticMode": "openFilesOnly",
+
+  // File-Watcher: verhindert "Unable to watch for file changes
+  // in this large workspace folder"
+  "files.watcherExclude": {
+    "**/build/**": true,
+    "**/build-*/**": true,
+    "**/.sources/**": true,
+    "**/sstate-cache/**": true,
+    "**/downloads/**": true,
+    "**/tmp/**": true,
+    "**/.git/objects/**": true,
+    "**/.git/subtree-cache/**": true,
+    "**/__pycache__/**": true
+  },
+
+  // Suche (Ctrl+Shift+F) und Quick-Open ebenfalls entlasten
+  "search.exclude": {
+    "**/build": true,
+    "**/build-*": true,
+    "**/.sources": true,
+    "**/sstate-cache": true,
+    "**/downloads": true,
+    "**/__pycache__": true
+  },
+  "search.followSymlinks": false,
+
+  // Im Explorer ausblenden (optional – auskommentieren, wenn du
+  // build/conf und die Logs dort weiterhin sehen willst)
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/*.pyc": true
+  }
+}
