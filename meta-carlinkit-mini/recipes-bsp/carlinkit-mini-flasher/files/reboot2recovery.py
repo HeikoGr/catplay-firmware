@@ -176,6 +176,19 @@ def _run_vendor_request(
         )
         return 0
     except usb.core.USBError as e:
+        if e.errno == 5:
+            # Live-confirmed multiple times this session: the device often
+            # drops off the bus mid-response because this vendor request
+            # itself triggers an immediate reboot - an I/O error here is
+            # the expected signature of success, not a real failure.
+            # Report it as such and let the caller's actual USB-device
+            # verification step (run unconditionally afterwards) be the
+            # real judge, rather than aborting the whole flow right here.
+            print(
+                f"[+] vendor_request sent (device dropped off mid-response while "
+                f"rebooting - expected): {e}"
+            )
+            return 0
         print(f"[!] vendor_request failed: {e}")
         return 1
 
