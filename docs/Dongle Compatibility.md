@@ -28,7 +28,7 @@
 - **RAM/Flash:** 128 MB RAM / 16 MB NOR (AX1800M revision). Earlier AX1800 revision (128 MB NAND, A/B OTA) is scarce.
 - **Kernel:** Linux 6.12.x
 - **CatPlay Status:** ✅ Released since v0.1.0; primary reference platform
-- **Flashing:** `tools/exploit.sh <ip>` — RCE in VehiConn firmware, reboots into Ingenic USB recovery (`a108:eaef`)
+- **Flashing:** `tools/exploit.py` (cross-platform, Windows/macOS/Linux) — RCE in VehiConn firmware, reboots into Ingenic USB recovery (`a108:eaef`), with an interactive Wi-Fi/IP-discovery assistant
 - **Exploit status:** Working as of firmware `system_version 20260612170300CA` (2026-09-11, confirmed by three independent testers)
 - **Open issue:** No CarPlay activation on some Stellantis NAC head units (2018–2024) — fake-iPhone not detected, no BT pairing. Suspected USB role-switch timing issue, unresolved (issue #1)
 
@@ -106,7 +106,7 @@ Carlinkit has shipped different internal hardware under the same product name/pa
 
 | Dongle | Method | Confidence |
 |---|---|---|
-| Carlinkit Mini Ultra (X1600EN) | `tools/exploit.sh` | High |
+| Carlinkit Mini Ultra (X1600EN) | `tools/exploit.py` | High |
 | Wooboobox B12 (V821B/RTL8733BS) | `tools/wizard.py --preset wooboobox` | High |
 | V821B/AIC8800D80 | — | N/A, no build |
 | AK3918 variant | — | N/A, unreleased |
