@@ -16,6 +16,7 @@ import select
 import socket
 import stat
 import sys
+import time
 from pathlib import Path
 from typing import Iterable
 
@@ -100,6 +101,19 @@ def _host_key_sha256(key: paramiko.PKey) -> str:
     return f"SHA256:{digest.rstrip('=')}"
 
 
+def _progress_line(msg: str) -> None:
+    """\r overwrites cleanly in a real terminal, but anything that captures
+    output non-interactively (a pipe, a log file, a tool that isn't a tty)
+    doesn't process \\r as a line reset - each update ends up concatenated
+    onto one giant line instead of being readable at all. Use a plain
+    newline there instead; a real terminal still gets the familiar
+    single-line-updating progress display."""
+    if sys.stdout.isatty():
+        print(f"\r{msg}", end="", flush=True)
+    else:
+        print(msg, flush=True)
+
+
 def _mkdir_p(sftp: paramiko.SFTPClient, remote_dir: str) -> None:
     if not remote_dir or remote_dir == "/":
         return
@@ -129,14 +143,27 @@ def _is_remote_dir_hint(remote_path: str) -> bool:
 def _put_file(sftp: paramiko.SFTPClient, local: Path, remote: str) -> None:
     _mkdir_p(sftp, posixpath.dirname(remote))
     total = local.stat().st_size
+    last_print = 0.0
 
     def cb(sent: int, size: int) -> None:
+        nonlocal last_print
         denom = size if size > 0 else total
+        now = time.monotonic()
+        # paramiko calls this on every chunk (32KB by default - 500+ times
+        # for a 16MB firmware image). \r overwrites cleanly in a real
+        # terminal, but anything that captures/logs output non-interactively
+        # (a pipe, a log file, ...) turns every single call into its own
+        # line. Throttle to a few updates a second regardless of chunk
+        # count; always print the final one so completion is still visible.
+        if sent < denom and now - last_print < 0.5:
+            return
+        last_print = now
         pct = (sent / denom * 100.0) if denom else 100.0
-        print(f"\r[upload] {local} -> {remote}  {sent}/{denom} bytes ({pct:5.1f}%)", end="", flush=True)
+        _progress_line(f"[upload] {local} -> {remote}  {sent}/{denom} bytes ({pct:5.1f}%)")
 
     sftp.put(str(local), remote, callback=cb)
-    print()
+    if sys.stdout.isatty():
+        print()
 
 
 def _iter_local_files(source: Path, recursive: bool) -> list[tuple[Path, str]]:
@@ -155,14 +182,23 @@ def _iter_local_files(source: Path, recursive: bool) -> list[tuple[Path, str]]:
 
 def _get_file(sftp: paramiko.SFTPClient, remote: str, local: Path) -> None:
     local.parent.mkdir(parents=True, exist_ok=True)
+    last_print = 0.0
 
     def cb(done: int, total: int) -> None:
+        nonlocal last_print
         denom = total if total > 0 else 1
+        now = time.monotonic()
+        # See the matching comment in _put_file(): throttle regardless of
+        # chunk count, but always show the final (100%) update.
+        if done < denom and now - last_print < 0.5:
+            return
+        last_print = now
         pct = done / denom * 100.0
-        print(f"\r[download] {remote} -> {local}  {done}/{total} bytes ({pct:5.1f}%)", end="", flush=True)
+        _progress_line(f"[download] {remote} -> {local}  {done}/{total} bytes ({pct:5.1f}%)")
 
     sftp.get(remote, str(local), callback=cb)
-    print()
+    if sys.stdout.isatty():
+        print()
 
 
 def _is_remote_dir(sftp: paramiko.SFTPClient, remote_path: str) -> bool:
