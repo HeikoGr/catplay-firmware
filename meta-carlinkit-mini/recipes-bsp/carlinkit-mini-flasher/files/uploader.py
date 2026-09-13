@@ -236,12 +236,14 @@ def _emit_complete_lines(buf: bytes, data: bytes, stream) -> bytes:
     return parts[-1]
 
 
-def _stream_exec(transport: paramiko.Transport, cmd: str) -> int:
+def _stream_exec(transport: paramiko.Transport, cmd: str, *, heartbeat_interval: float = 15.0) -> int:
     chan = transport.open_session()
     chan.exec_command(cmd)
 
     out_buf = b""
     err_buf = b""
+    start = time.monotonic()
+    last_heartbeat = start
     while True:
         select.select([chan], [], [], 0.2)
         if chan.recv_ready():
@@ -251,6 +253,17 @@ def _stream_exec(transport: paramiko.Transport, cmd: str) -> int:
 
         if chan.exit_status_ready() and not chan.recv_ready() and not chan.recv_stderr_ready():
             break
+
+        # This has no overall timeout at all - unbounded by design, since a
+        # real flash/command can legitimately take a long time - but with
+        # no other feedback, a long-but-normal run looks identical to a
+        # genuine hang. Print to stderr specifically so this never mixes
+        # into stdout output that callers may be parsing (e.g.
+        # exploit.py's is_recovery_stub() reading /proc/cmdline).
+        now = time.monotonic()
+        if now - last_heartbeat >= heartbeat_interval:
+            last_heartbeat = now
+            print(f"[*] still running ({now - start:.0f}s elapsed)...", file=sys.stderr, flush=True)
 
     if out_buf:
         sys.stdout.write(out_buf.decode("utf-8", errors="replace"))
