@@ -304,5 +304,22 @@ impl BootUltra {
                 SystemUtil::sleep(Duration::from_millis(50));
             }
         }
+
+        // Boots pinned to the "performance" cpufreq governor (see
+        // clk-mini-ultra-nor_defconfig) so the CPU cannot step down during
+        // the timing-critical early USB/CarPlay enumeration window - a
+        // cpufreq-triggered clock-rate change blocks for up to 100ms with
+        // IRQs disabled (see
+        // 0033-clk-ingenic-x1600-couple-cpu-and-l2-dividers.patch), which is
+        // believed to cause the intermittent USB detection failures on some
+        // head units (catplay-firmware issue #1). Switch to "ondemand" here,
+        // once that window has safely passed, so the thermal/power benefits
+        // from cpufreq still apply during normal operation.
+        if let Some(_fork_guard) = SystemUtil::fork_guard() {
+            SystemUtil::sleep(Duration::from_secs(8));
+            let _ = SystemUtil::run_shell(
+                "for p in /sys/devices/system/cpu/cpufreq/policy*; do echo ondemand > $p/scaling_governor; done",
+            );
+        }
     }
 }
