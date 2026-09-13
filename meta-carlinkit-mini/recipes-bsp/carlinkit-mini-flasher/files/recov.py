@@ -612,7 +612,27 @@ def main() -> int:
         print(f"[!] Error: {e}", file=sys.stderr)
         return 1
     except usb.core.USBError as e:
-        print(f"[!] USB error: {e}", file=sys.stderr)
+        # Live-confirmed twice this session: this whole sequence involves
+        # the device re-enumerating multiple times on its own (SPL return
+        # to BootROM, then the kernel launch itself), and a transient I/O
+        # error/"no such device" from a stale device handle at some point
+        # in that process doesn't necessarily mean the boot actually
+        # failed - both times, the recovery kernel had in fact come up
+        # successfully by the time this was reported. Don't just trust the
+        # USB-level signal; check the actual, observable outcome instead.
+        print(f"[!] USB error during boot sequence: {e}", file=sys.stderr)
+        print(
+            "[*] This can happen even on a successful boot (the device "
+            "re-enumerates multiple times during this process) - checking "
+            "whether the kernel actually came up anyway..."
+        )
+        if wait_for_ssh_open(args.verify_gadget_ip, args.verify_gadget_timeout, port=22):
+            print(
+                f"[+] SSH is open on {args.verify_gadget_ip}:22 - boot succeeded "
+                "despite the USB error above"
+            )
+            return 0
+        print("[!] SSH did not come up either; this looks like a real failure", file=sys.stderr)
         return 2
     finally:
         boot.close()
