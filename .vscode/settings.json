@@ -50,5 +50,41 @@
   "files.exclude": {
     "**/__pycache__": true,
     "**/*.pyc": true
-  }
+  },
+
+  // ---------------------------------------------------------------
+  // C/C++ IntelliSense (Microsoft C++ Tools) – Memory-Optimierung
+  // cpptools crasht mit SIGKILL (OOM-Killer), wenn es openembedded-core,
+  // bitbake, build/ indexiert. Hier Limits setzen.
+  // ---------------------------------------------------------------
+
+  // 1. IntelliSense-Engine auf leichtgewichtigen Tag-Parser umschalten
+  //    (statt vollständigem Semantic IntelliSense)
+  "C_Cpp.intellisenseEngine": "tag",
+
+  // 2. IntelliSense-Cache begrenzen (default unbegrenzt)
+  "C_Cpp.intellisenseEngineMaxCacheSize": 512,
+
+  // 3. Exclude-Pfade setzen (wie Python, aber cpptools braucht separate Liste)
+  "C_Cpp.excludedPaths": [
+    "${workspaceFolder}/build",
+    "${workspaceFolder}/build-*",
+    "${workspaceFolder}/.sources",
+    "${workspaceFolder}/bitbake",
+    "${workspaceFolder}/openembedded-core",
+    "${workspaceFolder}/meta-openembedded",
+    "${workspaceFolder}/meta-clang",
+    "${workspaceFolder}/meta-freescale",
+    "${workspaceFolder}/meta-rust",
+    "${workspaceFolder}/meta-lts-mixins-rust",
+    "${workspaceFolder}/.git"
+  ],
+
+  // 4. Project scope nur auf catplay-relevante Layer (optional, strict mode)
+  // Wenn du nur meta-catplay + meta-carlinkit + meta-carlinkit-mini bearbeiten willst:
+  // "C_Cpp.default.browse.path": ["${workspaceFolder}/meta-catplay", ...]
+  // Für jetzt deaktiviert um flexibel zu bleiben.
+
+  // 5. Error Squiggle reduzieren (nur kritische Fehler zeigen)
+  "C_Cpp.errorSquiggles": "enabled"
 }
