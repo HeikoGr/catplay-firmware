@@ -549,7 +549,7 @@ def main() -> int:
         print("[*] Start SPL (VR_PROGRAM_START1)")
         boot.program_start1(layout.spl_entry_addr)
 
-        print("[*] Waiting for SPL to return to BootROM...")
+        print(f"[*] Waiting for SPL to return to BootROM (timeout {args.spl_return_timeout:.1f}s)...")
         boot.wait_for_reenumeration(timeout_s=args.spl_return_timeout)
         print("[+] Device returned to BootROM")
 
@@ -624,7 +624,8 @@ def main() -> int:
         print(
             "[*] This can happen even on a successful boot (the device "
             "re-enumerates multiple times during this process) - checking "
-            "whether the kernel actually came up anyway..."
+            f"whether the kernel actually came up anyway (timeout "
+            f"{args.verify_gadget_timeout:.1f}s)..."
         )
         if wait_for_ssh_open(args.verify_gadget_ip, args.verify_gadget_timeout, port=22):
             print(

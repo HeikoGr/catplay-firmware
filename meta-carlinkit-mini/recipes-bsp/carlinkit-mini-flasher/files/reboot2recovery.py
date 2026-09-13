@@ -134,6 +134,7 @@ def _run_ultra_exploit(early_host: str) -> int:
 
 
 def _verify_usb_device(timeout_s: float, vid: int, pid: int) -> int:
+    print(f"[*] Waiting up to {timeout_s:.1f}s for USB device {vid:04x}:{pid:04x} to appear...")
     deadline = time.monotonic() + max(timeout_s, 0.0)
     while time.monotonic() <= deadline:
         dev = usb.core.find(idVendor=vid, idProduct=pid)
