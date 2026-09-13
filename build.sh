@@ -194,4 +194,40 @@ cd "${root_dir}"
 set +u
 source "${root_dir}/openembedded-core/oe-init-build-env" "${build_dir}" >/dev/null
 set -u
-exec bitbake "${target}" "$@"
+
+# BitBake occasionally leaves a stamp pointing at a tmp/deploy/ artifact that
+# no longer exists (e.g. after tmp/deploy/ was partially cleaned by hand, or
+# a build was interrupted mid-task) - it then trusts the stamp, skips the
+# task, and fails much later with a "license-file-missing" QA error or a
+# FileNotFoundError copying a missing .ipk into the package feed. Both are
+# harmless to retry: clearing the stale stamp forces BitBake to redo a cheap
+# packaging step instead of trusting a promise it can't keep. See
+# tools/fix-stale-deploy-artifacts.py for details.
+max_attempts="${BUILD_RETRY_ATTEMPTS:-3}"
+bitbake_log="$(mktemp -t catplay-bitbake-log.XXXXXX)"
+trap 'rm -f "${bitbake_log}"' EXIT
+
+attempt=1
+while true; do
+    set +e
+    bitbake "${target}" "$@" 2>&1 | tee "${bitbake_log}"
+    bitbake_rc="${PIPESTATUS[0]}"
+    set -e
+
+    if [[ "${bitbake_rc}" -eq 0 ]]; then
+        exit 0
+    fi
+
+    if [[ "${attempt}" -ge "${max_attempts}" ]]; then
+        echo "[!] BitBake failed after ${attempt} attempt(s), giving up" >&2
+        exit "${bitbake_rc}"
+    fi
+
+    if ! python3 "${root_dir}/tools/fix-stale-deploy-artifacts.py" --build-dir "${build_dir}" --from-log "${bitbake_log}"; then
+        echo "[!] BitBake failed (exit ${bitbake_rc}) with an error this script doesn't know how to recover from" >&2
+        exit "${bitbake_rc}"
+    fi
+
+    attempt=$((attempt + 1))
+    echo "[*] Retrying BitBake after clearing stale stamps (attempt ${attempt}/${max_attempts})"
+done
