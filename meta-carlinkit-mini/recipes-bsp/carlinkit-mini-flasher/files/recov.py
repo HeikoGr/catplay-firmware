@@ -440,6 +440,35 @@ def wait_for_ssh_open(host: str, timeout_s: float, port: int = 22) -> bool:
     return False
 
 
+# The recovery kernel exposes SSH on both its USB-Ethernet gadget interface
+# and its own Wi-Fi hotspot (C2A_AP), at the same fixed IP CatPlay itself
+# uses once fully installed. Live-confirmed this session: the Wi-Fi one can
+# come up and answer even when the USB one hasn't (or never does on this
+# particular machine's USB stack) - checking only the gadget IP made a
+# genuinely successful boot look like a hard failure.
+RECOVERY_WIFI_IP = "192.168.50.2"
+
+
+def wait_for_ssh_open_any(hosts: list[str], timeout_s: float, port: int = 22) -> str | None:
+    """Like wait_for_ssh_open(), but polls multiple candidate hosts within
+    the same time budget and returns whichever one answers first, or None
+    if none do within the deadline."""
+    deadline = time.monotonic() + max(timeout_s, 0.0)
+    seen = []
+    for host in hosts:
+        if host not in seen:
+            seen.append(host)
+    while time.monotonic() <= deadline:
+        for host in seen:
+            try:
+                with socket.create_connection((host, port), timeout=1.0):
+                    return host
+            except OSError:
+                continue
+        time.sleep(0.2)
+    return None
+
+
 def main() -> int:
     args = parse_args()
 
@@ -591,21 +620,19 @@ def main() -> int:
         boot.program_start2(args.trampoline_addr)
 
         print("[+] Done, trampoline started and kernel launched")
+        verify_hosts = [args.verify_gadget_ip, RECOVERY_WIFI_IP]
         print(
-            f"[*] Verifying SSH on {args.verify_gadget_ip}:22 "
+            f"[*] Verifying SSH on {' or '.join(verify_hosts)}:22 "
             f"(timeout {args.verify_gadget_timeout:.1f}s)..."
         )
-        if not wait_for_ssh_open(
-            args.verify_gadget_ip,
-            args.verify_gadget_timeout,
-            port=22,
-        ):
+        found_host = wait_for_ssh_open_any(verify_hosts, args.verify_gadget_timeout, port=22)
+        if found_host is None:
             print(
-                f"[!] Timeout waiting for SSH on {args.verify_gadget_ip}:22",
+                f"[!] Timeout waiting for SSH on {' or '.join(verify_hosts)}:22",
                 file=sys.stderr,
             )
             return 3
-        print(f"[+] SSH is open on {args.verify_gadget_ip}:22")
+        print(f"[+] SSH is open on {found_host}:22")
         return 0
 
     except X1600UsbBootError as e:
@@ -627,9 +654,12 @@ def main() -> int:
             f"whether the kernel actually came up anyway (timeout "
             f"{args.verify_gadget_timeout:.1f}s)..."
         )
-        if wait_for_ssh_open(args.verify_gadget_ip, args.verify_gadget_timeout, port=22):
+        found_host = wait_for_ssh_open_any(
+            [args.verify_gadget_ip, RECOVERY_WIFI_IP], args.verify_gadget_timeout, port=22
+        )
+        if found_host is not None:
             print(
-                f"[+] SSH is open on {args.verify_gadget_ip}:22 - boot succeeded "
+                f"[+] SSH is open on {found_host}:22 - boot succeeded "
                 "despite the USB error above"
             )
             return 0
