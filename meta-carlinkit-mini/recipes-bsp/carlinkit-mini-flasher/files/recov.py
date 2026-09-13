@@ -276,6 +276,33 @@ class X1600UsbBoot:
             "Device did not return to BootROM within expected time after SPL start"
         )
 
+    def wait_for_device(
+        self,
+        timeout_s: float = 10.0,
+        poll_interval_s: float = 0.2,
+    ) -> None:
+        """Like open(), but polls instead of checking exactly once. There is
+        no guarantee the device has already re-enumerated as the USB boot
+        device by the time a caller triggers a reboot (over the network via
+        the ultra_exploit RCE, or over USB via the vendor_request vendor
+        control transfer) and immediately calls this - a few hundred ms to a
+        few seconds of USB (re-)enumeration delay is normal and open()'s
+        single immediate check made that a real, reproducible failure mode."""
+        deadline = time.monotonic() + timeout_s
+        last_error: X1600UsbBootError | None = None
+        while time.monotonic() < deadline:
+            try:
+                self.open()
+                return
+            except X1600UsbBootError as e:
+                last_error = e
+                time.sleep(poll_interval_s)
+
+        raise X1600UsbBootError(
+            f"USB boot device {self.vid:04x}:{self.pid:04x} did not appear "
+            f"within {timeout_s:.1f}s (last error: {last_error})"
+        )
+
 
 def read_file(path: Path) -> bytes:
     try:
@@ -362,6 +389,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=float,
         default=10.0,
         help="How many seconds to wait for SPL to return to BootROM",
+    )
+    p.add_argument(
+        "--boot-wait-timeout",
+        type=float,
+        default=10.0,
+        help="How many seconds to wait for the USB boot device to appear "
+        "after a reboot-to-recovery trigger, before giving up",
     )
     p.add_argument(
         "--verify-gadget-ip",
@@ -498,8 +532,8 @@ def main() -> int:
     boot = X1600UsbBoot()
 
     try:
-        print("[*] Looking for X1600 USB boot device...")
-        boot.open()
+        print(f"[*] Looking for X1600 USB boot device (timeout {args.boot_wait_timeout:.1f}s)...")
+        boot.wait_for_device(timeout_s=args.boot_wait_timeout)
         print("[+] Device found")
 
         cpu_info = boot.get_cpu_info()

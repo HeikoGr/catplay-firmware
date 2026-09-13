@@ -45,7 +45,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--verify-timeout",
         type=float,
-        default=5.0,
+        default=10.0,
         help="Timeout in seconds for USB verification",
     )
     p.add_argument(
@@ -184,7 +184,7 @@ def run_reboot_to_recovery(
     mode: str,
     early_host: str | None,
     verify: bool = True,
-    verify_timeout: float = 5.0,
+    verify_timeout: float = 10.0,
     vid: int = USB_VID,
     pid: int = USB_PID,
     vendor_vid: int = USB_VENDOR_REQ_VID,
