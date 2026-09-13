@@ -50,6 +50,7 @@ SRC_URI:append = " \
     file://0035-hwrng-ingenic-gate-DTRNG-clock-around-requests.patch \
     file://0036-i2c-jz4780-gate-clock-around-transfers.patch \
     file://0037-dmaengine-jz4780-gate-controller-clock-around-transf.patch \
+    file://0038-dwc2-log-port-connect-enable-overcurrent-interrupts.patch \
 "
 
 # PV is defined in the base in linux-imx.inc file and uses the LINUX_VERSION definition
