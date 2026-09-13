@@ -29,8 +29,26 @@ Environment overrides:
 
 Examples:
   $0
-  MACHINE=clk-mini-ultra-nor $0 c2a-system-bundle
+  $0 c2a-system-bundle
+  MACHINE=clk-mini-ultra-nor-recov $0 c2a-system-bundle
   $0 -c cleansstate catplay
+
+Notes on MACHINE and c2a-system-bundle:
+  There are two related Carlinkit Mini Ultra machines, both built from the
+  same shared.conf/defconfig:
+    - clk-mini-ultra-nor       normal firmware image
+    - clk-mini-ultra-nor-recov recovery image + host-side flashing tools
+
+  Only clk-mini-ultra-nor-recov's machine conf declares the
+  carlinkit-mini-flasher:do_deploy extra dependency for c2a-system-bundle,
+  so it's the only one that (re)deploys tools/*.py (exploit.py, flash.py,
+  recov.py, ...) into the bundle. If you change anything under
+  meta-carlinkit-mini/recipes-bsp/carlinkit-mini-flasher/files/ and want
+  those changes reflected in build/tmp-c2a/clk-mini-ultra-nor/tools/, build
+  with:
+    MACHINE=clk-mini-ultra-nor-recov $0 c2a-system-bundle
+  Building c2a-system-bundle with the default MACHINE alone will not pick
+  up tools/*.py changes.
 EOF
 }
 
