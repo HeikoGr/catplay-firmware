@@ -1,11 +1,11 @@
 {
   // ---------------------------------------------------------------
-  // Yocto-Build-Artefakte von Indizierung / Watching ausnehmen.
-  // Ohne das laufen Pylance und der File-Watcher in Limits
-  // (build/tmp/work enthält komplett entpackte Upstream-Sourcen).
+  // Exclude Yocto build artifacts from indexing / watching.
+  // Without this, Pylance and the file watcher hit their limits
+  // (build/tmp/work contains fully unpacked upstream sources).
   // ---------------------------------------------------------------
 
-  // Pylance / Python-Analyse: diese Pfade gar nicht erst indizieren
+  // Pylance / Python analysis: don't index these paths at all
   "python.analysis.exclude": [
     "**/build/**",
     "**/build-*/**",
@@ -17,10 +17,10 @@
     "**/__pycache__/**",
     "**/.git/**"
   ],
-  // Diagnostik nur für geöffnete Dateien (kein Workspace-weiter Scan)
+  // Diagnostics only for open files (no workspace-wide scan)
   "python.analysis.diagnosticMode": "openFilesOnly",
 
-  // File-Watcher: verhindert "Unable to watch for file changes
+  // File watcher: avoids "Unable to watch for file changes
   // in this large workspace folder"
   "files.watcherExclude": {
     "**/build/**": true,
@@ -34,7 +34,7 @@
     "**/__pycache__/**": true
   },
 
-  // Suche (Ctrl+Shift+F) und Quick-Open ebenfalls entlasten
+  // Also lighten the load on search (Ctrl+Shift+F) and Quick-Open
   "search.exclude": {
     "**/build": true,
     "**/build-*": true,
@@ -45,27 +45,27 @@
   },
   "search.followSymlinks": false,
 
-  // Im Explorer ausblenden (optional – auskommentieren, wenn du
-  // build/conf und die Logs dort weiterhin sehen willst)
+  // Hide in the Explorer (optional - comment out if you still want
+  // to see build/conf and the logs there)
   "files.exclude": {
     "**/__pycache__": true,
     "**/*.pyc": true
   },
 
   // ---------------------------------------------------------------
-  // C/C++ IntelliSense (Microsoft C++ Tools) – Memory-Optimierung
-  // cpptools crasht mit SIGKILL (OOM-Killer), wenn es openembedded-core,
-  // bitbake, build/ indexiert. Hier Limits setzen.
+  // C/C++ IntelliSense (Microsoft C++ Tools) - memory optimization
+  // cpptools crashes with SIGKILL (OOM killer) if it indexes
+  // openembedded-core, bitbake, build/. Set limits here.
   // ---------------------------------------------------------------
 
-  // 1. IntelliSense-Engine auf leichtgewichtigen Tag-Parser umschalten
-  //    (statt vollständigem Semantic IntelliSense)
+  // 1. Switch the IntelliSense engine to the lightweight tag parser
+  //    (instead of full Semantic IntelliSense)
   "C_Cpp.intellisenseEngine": "tag",
 
-  // 2. IntelliSense-Cache begrenzen (default unbegrenzt)
+  // 2. Limit the IntelliSense cache (default is unbounded)
   "C_Cpp.intellisenseEngineMaxCacheSize": 512,
 
-  // 3. Exclude-Pfade setzen (wie Python, aber cpptools braucht separate Liste)
+  // 3. Set exclude paths (like Python, but cpptools needs its own list)
   "C_Cpp.excludedPaths": [
     "${workspaceFolder}/build",
     "${workspaceFolder}/build-*",
@@ -80,11 +80,11 @@
     "${workspaceFolder}/.git"
   ],
 
-  // 4. Project scope nur auf catplay-relevante Layer (optional, strict mode)
-  // Wenn du nur meta-catplay + meta-carlinkit + meta-carlinkit-mini bearbeiten willst:
+  // 4. Project scope limited to catplay-relevant layers only (optional, strict mode)
+  // If you only want to work on meta-catplay + meta-carlinkit + meta-carlinkit-mini:
   // "C_Cpp.default.browse.path": ["${workspaceFolder}/meta-catplay", ...]
-  // Für jetzt deaktiviert um flexibel zu bleiben.
+  // Disabled for now to stay flexible.
 
-  // 5. Error Squiggle reduzieren (nur kritische Fehler zeigen)
+  // 5. Reduce error squiggles (only show critical errors)
   "C_Cpp.errorSquiggles": "enabled"
 }
