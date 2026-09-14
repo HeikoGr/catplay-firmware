@@ -33,15 +33,14 @@ from __future__ import annotations
 
 import argparse
 import socket
-import struct
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-import usb.core
-import usb.util
+import usb.core  # type: ignore[import-untyped]
+import usb.util  # type: ignore[import-untyped]
 from errors import X1600UsbBootError
 from trampoline import MipsFwArgsLayout, Trampoline
 from uimage import UImage
@@ -233,8 +232,8 @@ class X1600UsbBoot:
             if written <= 0:
                 raise X1600UsbBootError(f"Bulk write failed at offset 0x{sent_total:x}")
 
-            start = sent_total
             sent_total += written
+            # start = sent_total - written
             # print(
             #    f"[USB] ACK 0x{start:08x} -> 0x{sent_total:08x} "
             #    f"(total {sent_total}/{total})"
@@ -421,7 +420,6 @@ def overlaps(a0: int, a1: int, b0: int, b1: int) -> bool:
 
 
 def initramfs_bootargs(args: str, initramfs_start: int, initramfs_size: int) -> str:
-    initramfs_end = initramfs_start + initramfs_size
     return (
         f"{args} "
         f"rd_start=0x{initramfs_start:08x} "

@@ -6,7 +6,7 @@ import socket
 import time
 
 import uploader
-import usb.core
+import usb.core  # type: ignore[import-untyped]
 
 USB_VID = 0xA108
 USB_PID = 0xEAEF
@@ -236,8 +236,10 @@ def run_reboot_to_recovery(
         return 2
 
     if mode == "ultra_exploit":
+        assert early_host is not None
         rc = _run_ultra_exploit(early_host)
     elif mode == "modern":
+        assert early_host is not None
         rc = _run_step([
             "--host", early_host,
             "--exec-cmd",
