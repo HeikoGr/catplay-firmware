@@ -51,9 +51,6 @@ def main() -> int:
         if rc != 0:
             return rc
 
-    if rc != 0:
-        return rc
-
     for step in post_steps:
         rc = run_step(step)
         if rc != 0:

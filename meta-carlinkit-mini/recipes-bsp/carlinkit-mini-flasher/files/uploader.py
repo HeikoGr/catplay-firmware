@@ -18,7 +18,7 @@ import stat
 import sys
 import time
 from pathlib import Path
-from typing import Iterable
+from typing import IO, Iterable
 
 import paramiko
 from cryptography.exceptions import UnsupportedAlgorithm
@@ -123,14 +123,14 @@ def _mkdir_p(sftp: paramiko.SFTPClient, remote_dir: str) -> None:
         cur = f"{cur}/{part}" if cur else part
         try:
             st = sftp.stat(cur)
-            if not stat.S_ISDIR(st.st_mode):
+            if not stat.S_ISDIR(st.st_mode or 0):
                 raise UploadError(f"Remote path exists but is not a directory: {cur}")
         except FileNotFoundError:
             sftp.mkdir(cur)
         except OSError:
             try:
                 st = sftp.stat(cur)
-                if not stat.S_ISDIR(st.st_mode):
+                if not stat.S_ISDIR(st.st_mode or 0):
                     raise UploadError(f"Remote path exists but is not a directory: {cur}")
             except Exception as e:
                 raise UploadError(f"Failed to create remote directory {cur}: {e}") from e
@@ -220,14 +220,14 @@ def _iter_remote_files(sftp: paramiko.SFTPClient, source: str, recursive: bool) 
         for entry in entries:
             child_remote = f"{cur_remote}/{entry.filename}"
             child_rel = f"{cur_rel}/{entry.filename}" if cur_rel else entry.filename
-            if stat.S_ISDIR(entry.st_mode):
+            if stat.S_ISDIR(entry.st_mode or 0):
                 stack.append((child_remote, child_rel))
-            elif stat.S_ISREG(entry.st_mode):
+            elif stat.S_ISREG(entry.st_mode or 0):
                 out.append((child_remote, child_rel))
     return out
 
 
-def _emit_complete_lines(buf: bytes, data: bytes, stream) -> bytes:
+def _emit_complete_lines(buf: bytes, data: bytes, stream: IO[str]) -> bytes:
     combined = buf + data
     parts = combined.split(b"\n")
     for line in parts[:-1]:
@@ -319,6 +319,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if rc == 0 else rc
 
         sftp = paramiko.SFTPClient.from_transport(transport)
+        if sftp is None:
+            raise UploadError("Failed to open SFTP channel")
         try:
             if args.download:
                 local_base = Path(args.path)
