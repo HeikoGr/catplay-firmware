@@ -1,0 +1,95 @@
+Subject: [PATCH] dwc2: skip redundant, racing wait_for_mode() on role-switch platforms
+Upstream-Status: Pending
+
+On platforms that register a usb_role_switch and have no external ID pin
+(dr_mode=OTG, "usb-role-switch" in the devicetree, e.g. the Carlinkit Mini
+Ultra's Ingenic X1600 OTG port - see carlinkit-mini-ultra-nor.dts), every
+call to dwc2_force_mode() ends up racing itself:
+
+ 1. dwc2_force_mode() writes the GUSBCFG force-mode bits and then
+    synchronously polls dwc2_wait_for_mode() for up to 110ms (call #1).
+ 2. That same GUSBCFG write also raises a hardware Connector ID Status
+    Change interrupt (dwc2_hw_is_otg() platforms only), serviced
+    *asynchronously* on hsotg->wq_otg by dwc2_conn_id_status_change()
+    (hcd.c). That handler performs a full core soft reset via
+    dwc2_core_init()/dwc2_core_reset() - which, per dwc2_core_reset()'s
+    own comment, temporarily forces the mode back to *device* regardless
+    of the force-mode bits, and only returns to the requested mode after
+    the IDDIG debounce filter elapses again. That path ends with its
+    *own*, independent dwc2_wait_for_mode() call (call #2), and it alone
+    goes on to call dwc2_enable_global_interrupts()/dwc2_hcd_start() -
+    i.e. it is the one actually bringing the new mode up.
+
+Call #1 therefore polls a mode bit that is reset out from under it by the
+very interrupt its own write triggered. It cannot win this race: measured
+on hardware, call #1 always times out (logging the misleading
+"dwc2_wait_for_mode: Couldn't set %s mode after 110 ms" warning) a few ms
+*after* call #2 has already started its own, separate wait - and nothing
+downstream reads dwc2_force_mode()'s implicit wait result, so call #1's
+outcome is entirely discarded. Confirmed reproducibly in captured dmesg
+from a real role-switch (accessory-initiated Role Switch vendor request)
+on this hardware:
+
+  force_mode(host): after  ... GINTMSK=d08c3cc4 ...      <- CONIDSTSCHNG unmasked (bit 28 set)
+  wait_for_mode(host): start ...                          <- call #1
+  wait_for_mode(host): start ... GINTMSK=00000000 ...     <- call #2 (from async core reset, ~99ms later)
+  dwc2_wait_for_mode: Couldn't set host mode after 110 ms  <- call #1 times out, orphaned
+  wait_for_mode(host): done after 100 ms ...               <- call #2 succeeds
+
+dwc2_drd_suspend()/dwc2_drd_resume() (drd.c) already mask/unmask
+GINTSTS_CONIDSTSCHNG under the exact same condition
+("hsotg->role_sw && !hsotg->params.external_id_pin_ctl") for the
+suspend/resume path, i.e. the driver already recognizes that on this kind
+of platform the interrupt-driven state machine is the authoritative one
+and the connector-ID interrupt is not meant to double as a synchronous
+completion signal. Masking the interrupt outright during normal
+operation is not an option here, though: dwc2_conn_id_status_change() is
+also where dwc2_hcd_start() gets called, so it must keep running.
+
+Instead, simply drop the redundant call #1: dwc2_force_mode() itself
+never consumes its own wait_for_mode() return value, so skipping it on
+these role-switch/no-external-ID-pin platforms changes no observable
+behavior of the real (async, interrupt-driven) transition - it only
+removes a doomed poll loop and its misleading warning. This mirrors the
+existing usb-role-switch + dr_mode==OTG special case already added to
+dwc2_clear_force_mode() by patch
+0022-dwc2-remove-3x100ms-overhead-when-booting-with-USB_DR_MODE_OTG-and-Ingenic-X1600.patch.
+
+---
+ drivers/usb/dwc2/core.c | 21 +++++++++++++++++++++
+ 1 file changed, 21 insertions(+)
+
+diff --git a/drivers/usb/dwc2/core.c b/drivers/usb/dwc2/core.c
+index 375e543d5f73..a1b2c3d4e5f6 100644
+--- a/drivers/usb/dwc2/core.c
++++ b/drivers/usb/dwc2/core.c
+@@ -576,6 +576,27 @@ void dwc2_force_mode(struct dwc2_hsotg *hsotg, bool host)
+ 		 dwc2_readl(hsotg, GINTSTS), dwc2_readl(hsotg, GINTMSK),
+ 		 dwc2_readl(hsotg, GRSTCTL));
+ 
++	/*
++	 * On role-switch-driven OTG platforms (no external ID pin), the
++	 * GUSBCFG write above raises a Connector ID Status Change interrupt
++	 * that dwc2_conn_id_status_change() services asynchronously: it
++	 * performs its own core reset and its own dwc2_wait_for_mode() call,
++	 * and it alone calls dwc2_hcd_start()/dwc2_enable_global_interrupts()
++	 * to actually bring the new mode up. Polling for the mode change
++	 * here too is redundant and races against that reset - this poll
++	 * observes the core mid-reset (triggered by our own write above)
++	 * and reliably times out with a "Couldn't set %s mode" warning that
++	 * nothing downstream acts on. Skip it and let the interrupt-driven
++	 * path be the sole, authoritative completion signal.
++	 */
++	if (hsotg->dr_mode == USB_DR_MODE_OTG &&
++	    device_property_read_bool(hsotg->dev, "usb-role-switch")) {
++		dev_dbg(hsotg->dev,
++			"force_mode(%s): role-switch platform, deferring to async conn-id handler\n",
++			host ? "host" : "device");
++		return;
++	}
++
+ 	dwc2_wait_for_mode(hsotg, host);
+ 	return;
+ }
+--
+2.55.0

@@ -51,6 +51,8 @@ SRC_URI:append = " \
     file://0036-i2c-jz4780-gate-clock-around-transfers.patch \
     file://0037-dmaengine-jz4780-gate-controller-clock-around-transf.patch \
     file://0038-dwc2-log-port-connect-enable-overcurrent-interrupts.patch \
+    file://0039-dwc2-skip-redundant-racing-wait_for_mode-on-role-switch-platforms.patch \
+    file://0040-dwc2-recover-and-log-root-hub-activation-seeing-stale-device-mode.patch \
 "
 
 # PV is defined in the base in linux-imx.inc file and uses the LINUX_VERSION definition
