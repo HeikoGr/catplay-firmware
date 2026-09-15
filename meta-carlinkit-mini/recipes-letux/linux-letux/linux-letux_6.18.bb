@@ -31,28 +31,50 @@ SRC_URI:append = " \
     file://0016-x1600-add-syscon-support.patch \
     file://0017-spi.patch \
     file://0018-leds-add-driver-for-SPI-driven-WorldSemi-WS2812B-RGB-LEDs.patch \
+"
+
+# USB role switch, part 1: PHY setup and telling the PHY which role was asked
+# for. Must precede everything dwc2 below.
+SRC_URI:append = " \
     file://0019-phy-ingenic-usb-use-optimal-flags-for-forced-role-switching-without-VBUS-and-ID-pins.patch \
     file://0020-phy-ingenic-usb-fix-incorrect-PHY-tuning.patch \
-    file://0021-dwc2-actually-communicate-requested-usb-role-switch-to-the-PHY.patch \
-    file://0022-dwc2-remove-3x100ms-overhead-when-booting-with-USB_DR_MODE_OTG-and-Ingenic-X1600.patch \
-    file://0023-dwc2-log-failed-dwc2_hsotg_core_connect-when-binding-gadget.patch \
+    file://0021-dwc2-communicate-requested-usb-role-switch-to-the-PHY.patch \
+"
+
+# Diagnostics only, and the single place they live. Drop this one entry for a
+# quiet kernel; every other dwc2 patch below is functional and stays. It is
+# applied before the functional dwc2 patches, which layer on top of it.
+SRC_URI:append = " \
+    file://0022-dwc2-verbose-role-switch-and-host-bring-up-instrumentation.patch \
+"
+
+SRC_URI:append = " \
     file://0024-mips-x1600-log-early-CP0-Count-as-boot-time-estimate.patch \
     file://0025-mips-x1600-add-AES-clock-references.patch \
     file://0026-crypto-ingenic-add-AES-accelerator-driver.patch \
     file://0027-mips-genex-use-literal-immediates-for-r4k-wait-skipover.patch \
     file://0028-mips-ingenic-drain-bridge-after-dma-cache-sync.patch \
     file://0029-jz4740_mmc-reduce-poll-irq-timeout-budget.patch \
+"
+
+# USB role switch, part 2: functional dwc2/usb-core changes.
+SRC_URI:append = " \
     file://0030-dwc2-drop-dwc2_hcd_start-50ms-delay.patch \
     file://0031-usb-core-set-USB_PORT_QUIRK_OLD_SCHEME-and-USB_PORT_QUIRK_FAST_ENUM-quirks-on-dwc2-root-hub.patch \
     file://0032-usb-hub-skip-OTG-root-hub-debounce-during-B-host-activation.patch \
+    file://0039-dwc2-skip-redundant-racing-wait_for_mode-on-role-switch-platforms.patch \
+    file://0040-dwc2-recover-root-hub-activation-seeing-stale-device-mode.patch \
+    file://0043-dwc2-skip-clear_force_mode-debounce-on-role-switch-platforms.patch \
+    file://0044-dwc2-use-fixed-FIFO-parameters-on-the-Ingenic-X1600-family.patch \
+"
+
+# Clock and power management. 0033 is a prerequisite for cpufreq on this SoC.
+SRC_URI:append = " \
     file://0033-clk-ingenic-x1600-couple-cpu-and-l2-dividers.patch \
     file://0034-clk-ingenic-x1600-fix-SADC-gate-bit.patch \
     file://0035-hwrng-ingenic-gate-DTRNG-clock-around-requests.patch \
     file://0036-i2c-jz4780-gate-clock-around-transfers.patch \
     file://0037-dmaengine-jz4780-gate-controller-clock-around-transf.patch \
-    file://0038-dwc2-log-port-connect-enable-overcurrent-interrupts.patch \
-    file://0039-dwc2-skip-redundant-racing-wait_for_mode-on-role-switch-platforms.patch \
-    file://0040-dwc2-recover-and-log-root-hub-activation-seeing-stale-device-mode.patch \
 "
 
 # PV is defined in the base in linux-imx.inc file and uses the LINUX_VERSION definition
@@ -74,6 +96,21 @@ SRCREV = "a3d00c045d89b4944df82a7648c382c3a9cb1d3c"
 do_kernel_configcheck[noexec] = "1"
 
 LOCALVERSION = "-letux"
+
+# Stamp the firmware tree's identity into the kernel banner, i.e. the
+# "Linux version 6.18.36-c2a (...) #1 PREEMPT <this string>" line at the very
+# top of dmesg. A captured log then says what it was built from, instead of
+# leaving you to guess whether a flashed image actually contains a given patch.
+#
+# This lands in UTS_VERSION, not UTS_RELEASE, so it does NOT change module
+# vermagic - out-of-tree modules (aic8800, iap2_char) keep loading. Set from
+# git describe, not the wall clock, so the value only changes when the tree
+# changes and the kernel is not rebuilt on every invocation.
+#
+# C2A_FW_VERSION / C2A_FW_DATE are written into conf/auto.conf by build.sh.
+C2A_FW_VERSION ?= "unknown"
+C2A_FW_DATE ?= "unknown"
+export KBUILD_BUILD_TIMESTAMP = "${C2A_FW_DATE} fw:${C2A_FW_VERSION}"
 
 inherit kernel-clang-c2a
 inherit kernel-deploy-extras-c2a

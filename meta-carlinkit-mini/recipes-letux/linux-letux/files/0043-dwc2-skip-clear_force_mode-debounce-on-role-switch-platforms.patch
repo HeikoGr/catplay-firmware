@@ -1,0 +1,52 @@
+Subject: [PATCH] dwc2: skip clear_force_mode debounce on role-switch platforms
+Upstream-Status: Pending
+
+Split out of the old
+0022-dwc2-remove-3x100ms-overhead-when-booting-with-USB_DR_MODE_OTG-and-Ingenic-X1600.patch,
+which mixed this behavioural change with unrelated logging and with an
+unrelated params.c change (now
+0044-dwc2-use-fixed-FIFO-parameters-on-the-Ingenic-X1600-family.patch) under
+a subject that described none of them.
+
+dwc2_clear_force_mode() drops the GUSBCFG force bits and then sleeps 100ms
+to wait out the IDDIG debounce filter, because the core falls back to
+whatever the ID pin reports. On a platform that drives the role from a
+usb_role_switch with dr_mode=OTG, nothing consumes that fallback state -
+the next mode change calls dwc2_force_mode() again, which waits on its own.
+The sleep only costs probe time and adds latency to every role switch.
+
+Note this is about dwc2_clear_force_mode() only. The debounce in
+dwc2_core_reset() is a different matter: there the core genuinely needs the
+time, and the ~100ms is observable on hardware.
+
+Also drops a commented-out dwc2_is_ingenic_x1600_family() call that the old
+patch left behind at this site - the helper is static to params.c and was
+never callable from here.
+
+---
+ drivers/usb/dwc2/core.c |  12 ++++++++++++
+ 1 file changed, 12 insertions(+), 0 deletions(-)
+
+--- a/drivers/usb/dwc2/core.c
++++ b/drivers/usb/dwc2/core.c
+@@ -616,6 +616,18 @@
+ 	gusbcfg &= ~GUSBCFG_FORCEDEVMODE;
+ 	dwc2_writel(hsotg, gusbcfg, GUSBCFG);
+ 
++	/*
++	 * The msleep() below exists to wait out the IDDIG debounce filter after
++	 * the force bits are dropped and the core falls back to whatever the ID
++	 * pin says. On a usb-role-switch platform with dr_mode=OTG there is no
++	 * consumer for that fallback state: every mode change goes through
++	 * dwc2_force_mode() again, which does its own waiting. Paying 100ms
++	 * here only delays probe and every subsequent role switch.
++	 */
++	if (hsotg->dr_mode == USB_DR_MODE_OTG &&
++	    device_property_read_bool(hsotg->dev, "usb-role-switch"))
++		return;
++
+ 	if (dwc2_iddig_filter_enabled(hsotg))
+ 		msleep(100);
+ }
+--
+2.55.0

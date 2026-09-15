@@ -1,0 +1,75 @@
+Subject: [PATCH] dwc2: use fixed FIFO parameters on the Ingenic X1600 family
+Upstream-Status: Pending
+
+Split out of the old
+0022-dwc2-remove-3x100ms-overhead-when-booting-with-USB_DR_MODE_OTG-and-Ingenic-X1600.patch.
+It carried this change with no explanation whatsoever, under a subject
+about removing 100ms delays, alongside unrelated logging and an unrelated
+core.c change. It is none of those things and deserves to stand or fall on
+its own.
+
+dwc2_get_host_hwparams() and dwc2_get_dev_hwparams() read the FIFO sizes
+back out of the hardware, which requires forcing the controller into host
+and then device mode during probe. On a usb-role-switch platform each of
+those forced transitions costs an IDDIG debounce wait, so the readback
+alone adds a large fixed cost to every boot - the reason it was bundled
+into a patch about removing delays.
+
+Substitute the known-good values for this SoC family instead of probing for
+them. The numbers are the ones the hardware reports on an X1600
+(GRXFSIZ/GNPTXFSIZ/HPTXFSIZ after reset) and match the vendor
+configuration.
+
+CAVEAT, recorded because the original patch recorded nothing: these values
+are asserted for the whole x1600/x1700/x1830/x2000 compatible list but have
+only been verified on the X1600 in the Carlinkit Mini Ultra. If another
+member of that family ships a different SPRAM size this silently
+mis-programs its FIFOs. Anyone enabling one of the other compatibles should
+confirm the values first, or narrow the match to "ingenic,x1600-otg".
+
+---
+ drivers/usb/dwc2/params.c |  24 ++++++++++++++++++++++--
+ 1 file changed, 22 insertions(+), 2 deletions(-)
+
+--- a/drivers/usb/dwc2/params.c
++++ b/drivers/usb/dwc2/params.c
+@@ -899,6 +899,14 @@
+  * currently in device mode. Should be called immediately after a core
+  * soft reset in order to get the reset values.
+  */
++static bool dwc2_is_ingenic_x1600_family(struct dwc2_hsotg *hsotg)
++{
++	return of_device_is_compatible(hsotg->dev->of_node, "ingenic,x1600-otg") ||
++	       of_device_is_compatible(hsotg->dev->of_node, "ingenic,x1700-otg") ||
++	       of_device_is_compatible(hsotg->dev->of_node, "ingenic,x1830-otg") ||
++	       of_device_is_compatible(hsotg->dev->of_node, "ingenic,x2000-otg");
++}
++
+ static void dwc2_get_dev_hwparams(struct dwc2_hsotg *hsotg)
+ {
+ 	struct dwc2_hw_params *hw = &hsotg->hw_params;
+@@ -1007,8 +1015,20 @@
+ 	 * requires the controller to be in host mode. The mode will
+ 	 * be forced, if necessary, to read these values.
+ 	 */
+-	dwc2_get_host_hwparams(hsotg);
+-	dwc2_get_dev_hwparams(hsotg);
++	if (dwc2_is_ingenic_x1600_family(hsotg)) {
++		int fifo;
++		int fifo_count = dwc2_hsotg_tx_fifo_count(hsotg);
++
++		hw->host_nperio_tx_fifo_size = 3648;
++		hw->host_perio_tx_fifo_size = 1024;
++		hw->dev_nperio_tx_fifo_size = 3648;
++		memset(hw->g_tx_fifo_size, 0, sizeof(hw->g_tx_fifo_size));
++		for (fifo = 1; fifo <= fifo_count; fifo++)
++			hw->g_tx_fifo_size[fifo] = 3648;
++	} else {
++		dwc2_get_host_hwparams(hsotg);
++		dwc2_get_dev_hwparams(hsotg);
++	}
+ 
+ 	return 0;
+ }
+--
+2.55.0

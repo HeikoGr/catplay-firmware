@@ -1,0 +1,473 @@
+Subject: [PATCH] dwc2: verbose role-switch and host bring-up instrumentation
+Upstream-Status: Pending
+
+Diagnostics for catplay-firmware issue #1: on some head units the dongle
+switches to USB host mode after an iAP2/CarPlay role-switch request and
+then never sees an accessory for the full 5s probe window. Almost every
+interesting transition in that path logs at dev_dbg/dev_vdbg, so a normal
+capture shows nothing and the two candidate explanations cannot be told
+apart:
+
+ a) the root hub was never activated - dwc2_core_host_init() never applied
+    HPRT0_PWR, so the port is unpowered and nothing can attach; or
+ b) the port is live but the head unit never re-presents itself.
+
+This patch is the single place where all of that instrumentation lives, so
+it can be dropped or carried as one unit. It consolidates what used to be
+spread over four patches (the logging half of the old
+0022-dwc2-remove-3x100ms-overhead..., plus 0023, 0038 and 0041) and adds
+HPRT0 coverage, which was missing entirely - not one dwc2 log line read
+that register.
+
+What it covers:
+
+ * drd.c - the requested role and phy_mode, the dwc2_ovr_avalid()/
+   dwc2_ovr_bvalid() return values, and a one-shot dump of
+   GSNPSID/GHWCFG4/GOTGCTL at drd init. The last one answers whether
+   GOTGCTL_DBNCE_FLTR_BYPASS (which dwc2_ovr_gotgctl() sets on every
+   override write) is honoured by this core at all; in captured dumps it
+   always reads back as 0, which decides whether the ~100ms IDDIG debounce
+   in dwc2_core_reset() is avoidable.
+
+ * core.c - full register state (GOTGCTL/GUSBCFG/GINTSTS/GINTMSK/GRSTCTL)
+   around dwc2_force_mode() and at start/success/timeout of
+   dwc2_wait_for_mode(), with elapsed milliseconds. This is what makes the
+   two racing wait_for_mode() calls visible (see patch 0039).
+
+ * gadget.c - dwc2_hsotg_core_connect() refusing to clear DCTL_SFTDISCON
+   because BSESVLD never arrived. Expected to be set immediately or shortly
+   after via interrupt; if the PHY is misconfigured it never comes, and
+   that used to be silent.
+
+ * hcd_intr.c - port connect/enable/overcurrent interrupts, i.e. whether
+   *any* electrical port activity happens during the probe window.
+
+ * hcd.c - dwc2_conn_id_status_change() entry/branch/hand-off,
+   dwc2_hcd_start(), dwc2_core_host_init()'s port-power decision (including
+   a warning when op_state is not OTG_STATE_A_HOST, which silently skips
+   HPRT0_PWR), and _dwc2_hcd_start()'s HPRT0/vbus-supply/root-hub-resume
+   results.
+
+ * hcd.c - a bounded HPRT0 sampler (250ms x 24 = 6s) started once the root
+   hub has been activated, decoding PWR/CONNSTS/CONNDET/ENA/SUSP/OVRCURR
+   plus line state and speed.
+
+Diagnostics only - no behavioural change.
+
+---
+ drivers/usb/dwc2/core.c     |  40 ++++++++++++++++++++++++++++++++++------
+ drivers/usb/dwc2/core.h     |   5 +++++
+ drivers/usb/dwc2/drd.c      |  30 ++++++++++++++++++++++++++++++
+ drivers/usb/dwc2/gadget.c   |   9 +++++++--
+ drivers/usb/dwc2/hcd.c      | 101 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++------------
+ drivers/usb/dwc2/hcd_intr.c |   8 ++++----
+ 6 files changed, 169 insertions(+), 24 deletions(-)
+
+--- a/drivers/usb/dwc2/core.c
++++ b/drivers/usb/dwc2/core.c
+@@ -296,8 +296,12 @@
+ 	ktime_t end;
+ 	unsigned int timeout = 110;
+ 
+-	dev_vdbg(hsotg->dev, "Waiting for %s mode\n",
+-		 host_mode ? "host" : "device");
++	dev_info(hsotg->dev,
++		 "wait_for_mode(%s): start GOTGCTL=%08x GUSBCFG=%08x GINTSTS=%08x GINTMSK=%08x GRSTCTL=%08x\n",
++		 host_mode ? "host" : "device",
++		 dwc2_readl(hsotg, GOTGCTL), dwc2_readl(hsotg, GUSBCFG),
++		 dwc2_readl(hsotg, GINTSTS), dwc2_readl(hsotg, GINTMSK),
++		 dwc2_readl(hsotg, GRSTCTL));
+ 
+ 	start = ktime_get();
+ 
+@@ -305,8 +309,14 @@
+ 		s64 ms;
+ 
+ 		if (dwc2_is_host_mode(hsotg) == host_mode) {
+-			dev_vdbg(hsotg->dev, "%s mode set\n",
+-				 host_mode ? "Host" : "Device");
++			dev_info(hsotg->dev,
++				 "wait_for_mode(%s): done after %lld ms GOTGCTL=%08x GUSBCFG=%08x GINTSTS=%08x GRSTCTL=%08x\n",
++				 host_mode ? "host" : "device",
++				 ktime_to_ms(ktime_sub(ktime_get(), start)),
++				 dwc2_readl(hsotg, GOTGCTL),
++				 dwc2_readl(hsotg, GUSBCFG),
++				 dwc2_readl(hsotg, GINTSTS),
++				 dwc2_readl(hsotg, GRSTCTL));
+ 			break;
+ 		}
+ 
+@@ -314,8 +324,14 @@
+ 		ms = ktime_to_ms(ktime_sub(end, start));
+ 
+ 		if (ms >= (s64)timeout) {
+-			dev_warn(hsotg->dev, "%s: Couldn't set %s mode\n",
+-				 __func__, host_mode ? "host" : "device");
++			dev_warn(hsotg->dev,
++				 "%s: Couldn't set %s mode after %lld ms GOTGCTL=%08x GUSBCFG=%08x GINTSTS=%08x GINTMSK=%08x GRSTCTL=%08x\n",
++				 __func__, host_mode ? "host" : "device", ms,
++				 dwc2_readl(hsotg, GOTGCTL),
++				 dwc2_readl(hsotg, GUSBCFG),
++				 dwc2_readl(hsotg, GINTSTS),
++				 dwc2_readl(hsotg, GINTMSK),
++				 dwc2_readl(hsotg, GRSTCTL));
+ 			break;
+ 		}
+ 
+@@ -530,6 +546,12 @@
+ 		return;
+ 
+ 	gusbcfg = dwc2_readl(hsotg, GUSBCFG);
++	dev_info(hsotg->dev,
++		 "force_mode(%s): before GOTGCTL=%08x GUSBCFG=%08x GINTSTS=%08x GINTMSK=%08x GRSTCTL=%08x\n",
++		 host ? "host" : "device",
++		 dwc2_readl(hsotg, GOTGCTL), gusbcfg,
++		 dwc2_readl(hsotg, GINTSTS), dwc2_readl(hsotg, GINTMSK),
++		 dwc2_readl(hsotg, GRSTCTL));
+ 
+ 	set = host ? GUSBCFG_FORCEHOSTMODE : GUSBCFG_FORCEDEVMODE;
+ 	clear = host ? GUSBCFG_FORCEDEVMODE : GUSBCFG_FORCEHOSTMODE;
+@@ -537,6 +559,12 @@
+ 	gusbcfg &= ~clear;
+ 	gusbcfg |= set;
+ 	dwc2_writel(hsotg, gusbcfg, GUSBCFG);
++	dev_info(hsotg->dev,
++		 "force_mode(%s): after  GOTGCTL=%08x GUSBCFG=%08x GINTSTS=%08x GINTMSK=%08x GRSTCTL=%08x\n",
++		 host ? "host" : "device",
++		 dwc2_readl(hsotg, GOTGCTL), dwc2_readl(hsotg, GUSBCFG),
++		 dwc2_readl(hsotg, GINTSTS), dwc2_readl(hsotg, GINTMSK),
++		 dwc2_readl(hsotg, GRSTCTL));
+ 
+ 	dwc2_wait_for_mode(hsotg, host);
+ 	return;
+--- a/drivers/usb/dwc2/core.h
++++ b/drivers/usb/dwc2/core.h
+@@ -992,6 +992,9 @@
+  * @start_work:         Delayed work for handling host A-cable connection
+  * @reset_work:         Delayed work for handling a port reset
+  * @phy_reset_work:     Work structure for doing a PHY reset
++ * @hprt0_probe_work:   Delayed work that periodically logs HPRT0 after the
++ *                      root hub has been activated (diagnostics only)
++ * @hprt0_probe_left:   Number of HPRT0 samples still to be taken
+  * @otg_port:           OTG port number
+  * @frame_list:         Frame list
+  * @frame_list_dma:     Frame list DMA address
+@@ -1183,6 +1186,8 @@
+ 	struct delayed_work start_work;
+ 	struct delayed_work reset_work;
+ 	struct work_struct phy_reset_work;
++	struct delayed_work hprt0_probe_work;
++	unsigned int hprt0_probe_left;
+ 	u8 otg_port;
+ 	u32 *frame_list;
+ 	dma_addr_t frame_list_dma;
+--- a/drivers/usb/dwc2/drd.c
++++ b/drivers/usb/dwc2/drd.c
+@@ -147,6 +147,9 @@
+ 	 * phy_set_mode_ext() takes phy->mutex, and sleeping while holding a
+ 	 * spinlock with interrupts disabled is invalid.
+ 	 */
++	dev_info(hsotg->dev, "drd role_sw_set: requested role=%d phy_mode=%d\n",
++		 role, phy_mode);
++
+ 	phy_set_mode(hsotg->phy, phy_mode);
+ 
+ 	spin_lock_irqsave(&hsotg->lock, flags);
+@@ -162,8 +165,12 @@
+ 
+ 	if (role == USB_ROLE_HOST) {
+ 		already = dwc2_ovr_avalid(hsotg, true);
++		dev_info(hsotg->dev, "drd role_sw_set: ovr_avalid ret=%d\n",
++			 already);
+ 	} else if (role == USB_ROLE_DEVICE) {
+ 		already = dwc2_ovr_bvalid(hsotg, true);
++		dev_info(hsotg->dev, "drd role_sw_set: ovr_bvalid ret=%d\n",
++			 already);
+ 		if (dwc2_is_device_enabled(hsotg)) {
+ 			/* This clear DCTL.SFTDISCON bit */
+ 			dwc2_hsotg_core_connect(hsotg);
+@@ -222,6 +229,29 @@
+ 	/* Enable override and initialize values */
+ 	dwc2_ovr_init(hsotg);
+ 
++	/*
++	 * dwc2_ovr_gotgctl() ORs in GOTGCTL_DBNCE_FLTR_BYPASS on every override
++	 * write, but that bit only exists on core rev >= 3.10a and reads back
++	 * as 0 on cores that do not implement it. Whether it sticks decides
++	 * what dwc2_iddig_filter_enabled() returns, and with it whether
++	 * dwc2_core_reset() blocks for the ~100ms IDDIG debounce on every role
++	 * switch. Log what the hardware actually reports, once.
++	 */
++	{
++		u32 gsnpsid = dwc2_readl(hsotg, GSNPSID);
++		u32 ghwcfg4 = dwc2_readl(hsotg, GHWCFG4);
++		u32 gotgctl = dwc2_readl(hsotg, GOTGCTL);
++
++		dev_info(hsotg->dev,
++			 "drd init: GSNPSID=%08x (>= 3.10a: %s) GHWCFG4=%08x (IDDIG filter: %s) GOTGCTL=%08x (DBNCE_FLTR_BYPASS: %s)\n",
++			 gsnpsid, gsnpsid >= DWC2_CORE_REV_3_10a ? "yes" : "no",
++			 ghwcfg4,
++			 ghwcfg4 & GHWCFG4_IDDIG_FILT_EN ? "present" : "absent",
++			 gotgctl,
++			 gotgctl & GOTGCTL_DBNCE_FLTR_BYPASS ?
++				"took" : "IGNORED BY HW");
++	}
++
+ 	return 0;
+ }
+ 
+--- a/drivers/usb/dwc2/gadget.c
++++ b/drivers/usb/dwc2/gadget.c
+@@ -3600,8 +3600,13 @@
+ void dwc2_hsotg_core_connect(struct dwc2_hsotg *hsotg)
+ {
+ 	/* remove the soft-disconnect and let's go */
+-	if (!hsotg->role_sw || (dwc2_readl(hsotg, GOTGCTL) & GOTGCTL_BSESVLD))
+-		dwc2_clear_bit(hsotg, DCTL, DCTL_SFTDISCON);
++	if (hsotg->role_sw && !(dwc2_readl(hsotg, GOTGCTL) & GOTGCTL_BSESVLD)) {
++		dev_info(hsotg->dev, "dwc2_hsotg_core_connect: lack of BSESVLD\n");
++		return;
++	}
++
++	dev_info(hsotg->dev, "dwc2_hsotg_core_connect: success\n");
++	dwc2_clear_bit(hsotg, DCTL, DCTL_SFTDISCON);
+ }
+ 
+ /**
+--- a/drivers/usb/dwc2/hcd.c
++++ b/drivers/usb/dwc2/hcd.c
+@@ -1645,6 +1645,9 @@
+ {
+ 	u32 hprt0;
+ 
++	dev_info(hsotg->dev, "%s: op_state=%d HPRT0=%08x\n", __func__,
++		 hsotg->op_state, dwc2_readl(hsotg, HPRT0));
++
+ 	if (hsotg->op_state == OTG_STATE_B_HOST) {
+ 		/*
+ 		 * Reset the port. During a HNP mode switch the reset
+@@ -2246,16 +2249,23 @@
+ 	dwc2_enable_acg(hsotg);
+ 
+ 	/* Turn on the vbus power */
+-	dev_dbg(hsotg->dev, "Init: Port Power? op_state=%d\n", hsotg->op_state);
++	dev_info(hsotg->dev, "Init: Port Power? op_state=%d\n",
++		 hsotg->op_state);
+ 	if (hsotg->op_state == OTG_STATE_A_HOST) {
+ 		u32 hprt0 = dwc2_read_hprt0(hsotg);
+ 
+-		dev_dbg(hsotg->dev, "Init: Power Port (%d)\n",
+-			!!(hprt0 & HPRT0_PWR));
++		dev_info(hsotg->dev, "Init: Power Port (%d)\n",
++			 !!(hprt0 & HPRT0_PWR));
+ 		if (!(hprt0 & HPRT0_PWR)) {
+ 			hprt0 |= HPRT0_PWR;
+ 			dwc2_writel(hsotg, hprt0, HPRT0);
++			dev_info(hsotg->dev,
++				 "Init: Port Power applied, HPRT0=%08x\n",
++				 dwc2_readl(hsotg, HPRT0));
+ 		}
++	} else {
++		dev_warn(hsotg->dev,
++			 "Init: op_state is not A_HOST - port power NOT applied, no device can be detected\n");
+ 	}
+ 
+ 	dwc2_enable_host_interrupts(hsotg);
+@@ -3142,12 +3152,9 @@
+ 	u32 gotgctl;
+ 	unsigned long flags;
+ 
+-	dev_dbg(hsotg->dev, "%s()\n", __func__);
+-
+ 	gotgctl = dwc2_readl(hsotg, GOTGCTL);
+-	dev_dbg(hsotg->dev, "gotgctl=%0x\n", gotgctl);
+-	dev_dbg(hsotg->dev, "gotgctl.b.conidsts=%d\n",
+-		!!(gotgctl & GOTGCTL_CONID_B));
++	dev_info(hsotg->dev, "%s(): GOTGCTL=%08x conidsts=%d\n", __func__,
++		 gotgctl, !!(gotgctl & GOTGCTL_CONID_B));
+ 
+ 	/* B-Device connector (Device Mode) */
+ 	if (gotgctl & GOTGCTL_CONID_B) {
+@@ -3200,7 +3207,8 @@
+ 	} else {
+ host:
+ 		/* A-Device connector (Host Mode) */
+-		dev_dbg(hsotg->dev, "connId A\n");
++		dev_info(hsotg->dev, "connId A (GOTGCTL=%08x)\n",
++			 dwc2_readl(hsotg, GOTGCTL));
+ 		while (!dwc2_is_host_mode(hsotg)) {
+ 			dev_info(hsotg->dev, "Waiting for Host Mode, Mode=%s\n",
+ 				 dwc2_is_host_mode(hsotg) ?
+@@ -3221,6 +3229,9 @@
+ 		/* Initialize the Core for Host mode */
+ 		dwc2_core_init(hsotg, false);
+ 		dwc2_enable_global_interrupts(hsotg);
++		dev_info(hsotg->dev,
++			 "connId A: core reinit done, mode=%s, starting HCD\n",
++			 dwc2_is_host_mode(hsotg) ? "host" : "device");
+ 		dwc2_hcd_start(hsotg);
+ 	}
+ }
+@@ -4201,6 +4212,53 @@
+ }
+ 
+ /*
++ * Diagnostics: sample HPRT0 for a bounded window after the root hub has been
++ * activated. A head unit typically re-presents itself a few hundred ms after
++ * an accessory-initiated role switch and the iAP2 accessory probe window is
++ * 5s, so a single log line at bring-up cannot show whether anything ever
++ * attaches - the port has to be watched.
++ *
++ * This deliberately runs on system_wq, not on hsotg->wq_otg: the latter is an
++ * ordered workqueue (alloc_ordered_workqueue() in dwc2_hcd_init()), so a
++ * self-requeuing delayed work there would stall real OTG work for six
++ * seconds.
++ */
++#define DWC2_HPRT0_PROBE_INTERVAL_MS	250
++#define DWC2_HPRT0_PROBE_SAMPLES	24
++
++static void dwc2_hprt0_probe_func(struct work_struct *work)
++{
++	struct dwc2_hsotg *hsotg = container_of(work, struct dwc2_hsotg,
++						hprt0_probe_work.work);
++	u32 hprt0 = dwc2_readl(hsotg, HPRT0);
++
++	dev_info(hsotg->dev,
++		 "hprt0 sample %u/%u: HPRT0=%08x [%s%s%s%s%s%s] lnsts=%u spd=%u GINTSTS=%08x GINTMSK=%08x GOTGCTL=%08x\n",
++		 DWC2_HPRT0_PROBE_SAMPLES - hsotg->hprt0_probe_left + 1,
++		 DWC2_HPRT0_PROBE_SAMPLES, hprt0,
++		 hprt0 & HPRT0_PWR ? "PWR " : "",
++		 hprt0 & HPRT0_CONNSTS ? "CONNSTS " : "",
++		 hprt0 & HPRT0_CONNDET ? "CONNDET " : "",
++		 hprt0 & HPRT0_ENA ? "ENA " : "",
++		 hprt0 & HPRT0_SUSP ? "SUSP " : "",
++		 hprt0 & HPRT0_OVRCURRACT ? "OVRCURR " : "",
++		 (unsigned int)((hprt0 & HPRT0_LNSTS_MASK) >> HPRT0_LNSTS_SHIFT),
++		 (unsigned int)((hprt0 & HPRT0_SPD_MASK) >> HPRT0_SPD_SHIFT),
++		 dwc2_readl(hsotg, GINTSTS), dwc2_readl(hsotg, GINTMSK),
++		 dwc2_readl(hsotg, GOTGCTL));
++
++	if (--hsotg->hprt0_probe_left)
++		schedule_delayed_work(&hsotg->hprt0_probe_work,
++				      msecs_to_jiffies(DWC2_HPRT0_PROBE_INTERVAL_MS));
++}
++
++static void dwc2_hprt0_probe_start(struct dwc2_hsotg *hsotg)
++{
++	hsotg->hprt0_probe_left = DWC2_HPRT0_PROBE_SAMPLES;
++	mod_delayed_work(system_wq, &hsotg->hprt0_probe_work, 0);
++}
++
++/*
+  * Reset work queue function
+  */
+ static void dwc2_hcd_reset_func(struct work_struct *work)
+@@ -4252,7 +4310,8 @@
+ 	u32 hprt0;
+ 	int ret;
+ 
+-	dev_dbg(hsotg->dev, "DWC OTG HCD START\n");
++	dev_info(hsotg->dev, "DWC OTG HCD START (mode=%s)\n",
++		 dwc2_is_host_mode(hsotg) ? "host" : "device");
+ 
+ 	spin_lock_irqsave(&hsotg->lock, flags);
+ 	hsotg->lx_state = DWC2_L0;
+@@ -4268,24 +4327,40 @@
+ 
+ 	hprt0 = dwc2_read_hprt0(hsotg);
+ 	/* Has vbus power been turned on in dwc2_core_host_init ? */
++	dev_info(hsotg->dev,
++		 "%s: after hcd_reinit HPRT0=%08x (PWR=%d) op_state=%d\n",
++		 __func__, hprt0, !!(hprt0 & HPRT0_PWR), hsotg->op_state);
+ 	if (hprt0 & HPRT0_PWR) {
+ 		/* Enable external vbus supply before resuming root hub */
+ 		spin_unlock_irqrestore(&hsotg->lock, flags);
+ 		ret = dwc2_vbus_supply_init(hsotg);
+-		if (ret)
++		if (ret) {
++			dev_err(hsotg->dev,
++				"%s: dwc2_vbus_supply_init failed: %d - root hub not resumed\n",
++				__func__, ret);
+ 			return ret;
++		}
+ 		spin_lock_irqsave(&hsotg->lock, flags);
++	} else {
++		dev_warn(hsotg->dev,
++			 "%s: port power is NOT set - no device will ever be detected on this port\n",
++			 __func__);
+ 	}
+ 
+ 	/* Initialize and connect root hub if one is not already attached */
+ 	if (bus->root_hub) {
+-		dev_dbg(hsotg->dev, "DWC OTG HCD Has Root Hub\n");
++		dev_info(hsotg->dev, "%s: resuming root hub\n", __func__);
+ 		/* Inform the HUB driver to resume */
+ 		usb_hcd_resume_root_hub(hcd);
++	} else {
++		dev_warn(hsotg->dev, "%s: no root hub attached to this bus\n",
++			 __func__);
+ 	}
+ 
+ 	spin_unlock_irqrestore(&hsotg->lock, flags);
+ 
++	dwc2_hprt0_probe_start(hsotg);
++
+ 	return 0;
+ }
+ 
+@@ -5082,6 +5157,7 @@
+ 	}
+ 
+ 	cancel_work_sync(&hsotg->phy_reset_work);
++	cancel_delayed_work_sync(&hsotg->hprt0_probe_work);
+ 
+ 	timer_delete(&hsotg->wkp_timer);
+ }
+@@ -5232,6 +5308,7 @@
+ 	INIT_DELAYED_WORK(&hsotg->start_work, dwc2_hcd_start_func);
+ 	INIT_DELAYED_WORK(&hsotg->reset_work, dwc2_hcd_reset_func);
+ 	INIT_WORK(&hsotg->phy_reset_work, dwc2_hcd_phy_reset_func);
++	INIT_DELAYED_WORK(&hsotg->hprt0_probe_work, dwc2_hprt0_probe_func);
+ 
+ 	/*
+ 	 * Allocate space for storing data on status transactions. Normally no
+--- a/drivers/usb/dwc2/hcd_intr.c
++++ b/drivers/usb/dwc2/hcd_intr.c
+@@ -327,7 +327,7 @@
+ 	u32 hprt0;
+ 	u32 hprt0_modify;
+ 
+-	dev_vdbg(hsotg->dev, "--Port Interrupt--\n");
++	dev_info(hsotg->dev, "--Port Interrupt--\n");
+ 
+ 	hprt0 = dwc2_readl(hsotg, HPRT0);
+ 	hprt0_modify = hprt0;
+@@ -346,7 +346,7 @@
+ 	if (hprt0 & HPRT0_CONNDET) {
+ 		dwc2_writel(hsotg, hprt0_modify | HPRT0_CONNDET, HPRT0);
+ 
+-		dev_vdbg(hsotg->dev,
++		dev_info(hsotg->dev,
+ 			 "--Port Interrupt HPRT0=0x%08x Port Connect Detected--\n",
+ 			 hprt0);
+ 		dwc2_hcd_connect(hsotg);
+@@ -363,7 +363,7 @@
+ 	 */
+ 	if (hprt0 & HPRT0_ENACHG) {
+ 		dwc2_writel(hsotg, hprt0_modify | HPRT0_ENACHG, HPRT0);
+-		dev_vdbg(hsotg->dev,
++		dev_info(hsotg->dev,
+ 			 "  --Port Interrupt HPRT0=0x%08x Port Enable Changed (now %d)--\n",
+ 			 hprt0, !!(hprt0 & HPRT0_ENA));
+ 		if (hprt0 & HPRT0_ENA) {
+@@ -387,7 +387,7 @@
+ 	if (hprt0 & HPRT0_OVRCURRCHG) {
+ 		dwc2_writel(hsotg, hprt0_modify | HPRT0_OVRCURRCHG,
+ 			    HPRT0);
+-		dev_vdbg(hsotg->dev,
++		dev_info(hsotg->dev,
+ 			 "  --Port Interrupt HPRT0=0x%08x Port Overcurrent Changed--\n",
+ 			 hprt0);
+ 		hsotg->flags.b.port_over_current_change = 1;
+--
+2.55.0

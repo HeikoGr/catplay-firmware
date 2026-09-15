@@ -1,0 +1,75 @@
+Subject: [PATCH] dwc2: communicate the requested usb-role-switch to the PHY
+Upstream-Status: Pending
+
+dwc2_drd_role_sw_set() updates the controller's own view of the role
+(GOTGCTL overrides, GUSBCFG force bits) but never tells the PHY, so the
+Ingenic PHY keeps whatever IDDIG/USBPCR state it was left in. Map the
+requested usb_role to a phy_mode and call phy_set_mode().
+
+phy_set_mode() -> phy_set_mode_ext() takes phy->mutex, so it must not be
+called with hsotg->lock held - that would sleep in atomic context with
+interrupts disabled. Call it before the lock is taken. The USB_ROLE_NONE
+remapping is moved out of the locked section as well; it only touches the
+local `role` variable and hsotg->role_sw_default_mode, which is read-only
+after probe.
+
+This patch is deliberately free of logging - see
+0022-dwc2-verbose-role-switch-and-host-bring-up-instrumentation.patch.
+
+---
+ drivers/usb/dwc2/drd.c |  28 ++++++++++++++++++++++++++--
+ 1 file changed, 26 insertions(+), 2 deletions(-)
+
+--- a/drivers/usb/dwc2/drd.c
++++ b/drivers/usb/dwc2/drd.c
+@@ -86,6 +86,7 @@
+ static int dwc2_drd_role_sw_set(struct usb_role_switch *sw, enum usb_role role)
+ {
+ 	struct dwc2_hsotg *hsotg = usb_role_switch_get_drvdata(sw);
++	enum phy_mode phy_mode;
+ 	unsigned long flags;
+ 	int already = 0;
+ 
+@@ -117,8 +118,6 @@
+ 			return ret;
+ 	}
+ 
+-	spin_lock_irqsave(&hsotg->lock, flags);
+-
+ 	if (role == USB_ROLE_NONE) {
+ 		/* default operation mode when usb role is USB_ROLE_NONE */
+ 		if (hsotg->role_sw_default_mode == USB_DR_MODE_HOST)
+@@ -127,6 +126,31 @@
+ 			role = USB_ROLE_DEVICE;
+ 	}
+ 
++	switch (role) {
++	case USB_ROLE_HOST:
++		phy_mode = PHY_MODE_USB_HOST;
++		break;
++	case USB_ROLE_DEVICE:
++		phy_mode = PHY_MODE_USB_DEVICE;
++		break;
++	default:
++		phy_mode = PHY_MODE_USB_OTG;
++		break;
++	}
++
++	/*
++	 * Tell the PHY which role was requested. Without this the Ingenic PHY
++	 * keeps whatever IDDIG/USBPCR state it was left in and the controller
++	 * and the PHY disagree about the current role.
++	 *
++	 * This must happen *before* hsotg->lock is taken: phy_set_mode() ->
++	 * phy_set_mode_ext() takes phy->mutex, and sleeping while holding a
++	 * spinlock with interrupts disabled is invalid.
++	 */
++	phy_set_mode(hsotg->phy, phy_mode);
++
++	spin_lock_irqsave(&hsotg->lock, flags);
++
+ 	if ((IS_ENABLED(CONFIG_USB_DWC2_PERIPHERAL) ||
+ 	     IS_ENABLED(CONFIG_USB_DWC2_DUAL_ROLE)) &&
+ 	     dwc2_is_device_mode(hsotg) &&
+--
+2.55.0

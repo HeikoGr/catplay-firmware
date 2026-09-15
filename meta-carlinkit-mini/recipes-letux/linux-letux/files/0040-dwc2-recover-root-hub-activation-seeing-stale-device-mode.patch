@@ -1,0 +1,112 @@
+Subject: [PATCH] dwc2: recover root-hub activation seeing stale device mode
+Upstream-Status: Pending
+
+_dwc2_hcd_start() ("Starts the HCD when switching to Host mode") opens with
+
+	if (dwc2_is_device_mode(hsotg)) {
+		spin_unlock_irqrestore(&hsotg->lock, flags);
+		return 0;	/* why 0 ?? */
+	}
+
+- an unexplained, entirely silent early return that skips
+dwc2_hcd_reinit(), dwc2_vbus_supply_init() and, critically,
+usb_hcd_resume_root_hub(). The root hub is never activated and the host
+controller's port connect/enable/overcurrent interrupts never get enabled,
+with nothing in dmesg to explain why.
+
+hsotg->wq_otg is an ordered workqueue (alloc_ordered_workqueue() in
+dwc2_hcd_init()), so this function - queued as hsotg->start_work by
+dwc2_hcd_start() - cannot run concurrently with
+dwc2_conn_id_status_change(): it only runs after the A-Device/host branch
+that queued it has returned, i.e. after
+dwc2_core_init()->dwc2_core_reset() has already confirmed host mode. So
+dwc2_is_device_mode() should not be true here. The most plausible way it
+becomes true anyway is a second Connector ID Status Change interrupt
+queuing another dwc2_conn_id_status_change() job on the same ordered queue
+ahead of start_work, which - if it takes the B-Device branch - flips the
+mode back before start_work gets its turn.
+
+Captured dmesg from a real role switch on this hardware (Carlinkit Mini
+Ultra, Ingenic X1600, Toyota Proace Verso NAC Wave 2) shows two racing
+dwc2_wait_for_mode(host) calls around one force_mode(host) request (see
+patch 0039) and zero port interrupt activity for the entire accessory-probe
+window afterwards, consistent with the root hub never being activated.
+
+Replace the silent return with a loud warning naming the state, a bounded
+retry (up to 200ms, the worst-case mode-switch time measured here), and
+either confirmation of recovery or an error making the permanent failure
+visible instead of silent.
+
+Whether this is the actual failure mode on this hardware is not yet
+established - patch 0022's HPRT0 instrumentation is what settles it. The
+recovery is worth having either way: the silent return is a real hole.
+
+---
+ drivers/usb/dwc2/hcd.c |  46 +++++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 45 insertions(+), 1 deletion(-)
+
+--- a/drivers/usb/dwc2/hcd.c
++++ b/drivers/usb/dwc2/hcd.c
+@@ -16,6 +16,7 @@
+ #include <linux/platform_device.h>
+ #include <linux/dma-mapping.h>
+ #include <linux/delay.h>
++#include <linux/jiffies.h>
+ #include <linux/io.h>
+ #include <linux/slab.h>
+ #include <linux/usb.h>
+@@ -4319,8 +4320,51 @@
+ 	set_bit(HCD_FLAG_HW_ACCESSIBLE, &hcd->flags);
+ 
+ 	if (dwc2_is_device_mode(hsotg)) {
++		unsigned long timeout;
++
+ 		spin_unlock_irqrestore(&hsotg->lock, flags);
+-		return 0;	/* why 0 ?? */
++
++		/*
++		 * Normally the mode is already host here: this function only
++		 * runs (queued as hsotg->start_work on the ordered
++		 * hsotg->wq_otg workqueue) after dwc2_conn_id_status_change()'s
++		 * A-Device branch has already confirmed host mode. Seeing
++		 * device mode means something flipped it back in between - for
++		 * example a second Connector ID Status Change interrupt queuing
++		 * another dwc2_conn_id_status_change() job ahead of this one on
++		 * the same ordered workqueue.
++		 *
++		 * This used to silently return 0, skipping dwc2_hcd_reinit(),
++		 * dwc2_vbus_supply_init() and usb_hcd_resume_root_hub() - the
++		 * root hub was never activated and the host controller's port
++		 * interrupts stayed disabled for good, with nothing in dmesg to
++		 * explain it. Retry for a bounded time instead, matching the
++		 * ~200ms worst-case mode switch measured on this hardware.
++		 */
++		dev_warn(hsotg->dev,
++			 "%s: unexpectedly in device mode (GOTGCTL=%08x GINTSTS=%08x) when activating the root hub - retrying for up to 200ms\n",
++			 __func__, dwc2_readl(hsotg, GOTGCTL),
++			 dwc2_readl(hsotg, GINTSTS));
++
++		timeout = jiffies + msecs_to_jiffies(200);
++		while (dwc2_is_device_mode(hsotg) &&
++		       time_before(jiffies, timeout))
++			usleep_range(1000, 2000);
++
++		spin_lock_irqsave(&hsotg->lock, flags);
++
++		if (dwc2_is_device_mode(hsotg)) {
++			dev_err(hsotg->dev,
++				"%s: still in device mode after 200ms - root hub will NOT be activated (GOTGCTL=%08x GINTSTS=%08x)\n",
++				__func__, dwc2_readl(hsotg, GOTGCTL),
++				dwc2_readl(hsotg, GINTSTS));
++			spin_unlock_irqrestore(&hsotg->lock, flags);
++			return 0;	/* why 0 ?? */
++		}
++
++		dev_info(hsotg->dev,
++			 "%s: recovered host mode after retry, continuing root hub activation\n",
++			 __func__);
+ 	}
+ 
+ 	dwc2_hcd_reinit(hsotg);
+--
+2.55.0
