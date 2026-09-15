@@ -61,8 +61,21 @@ issue #1:
    capture a discriminator: if the head unit re-enumerates us the moment
    we are back in device mode, it never left host mode itself.
 
-Written against catplay-labs/catplay master with 0001 applied. Compiled
-and run on hardware: not yet.
+Written against catplay-labs/catplay master with 0001 applied.
+
+Verified on hardware 2026-09-15 against the same NAC Wave 2, twice in
+one boot:
+
+  iPhone: role switch acknowledged by host after 32us
+  iPhone: role switch acknowledged by host after 16us
+
+So the head unit collects the status stage within a microframe or two,
+and the 360us of the old code were never too early - point 1 is a
+correctness fix and a measurement, not the cause of issue #1. Point 2 is
+confirmed: after the rebind the head unit enumerated the dongle within
+300ms and went through the whole handshake again (it never left host
+mode). What the capture then pinned down is the second IDDIG debounce
+in dwc2's host bring-up, see kernel patch 0046.
 ---
  f_iphone.c   | 62 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++--
  iphone_dev.c | 22 +++++++++++++++++-----

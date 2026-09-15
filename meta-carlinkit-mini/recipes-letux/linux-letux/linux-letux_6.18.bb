@@ -65,6 +65,7 @@ SRC_URI:append = " \
     file://0039-dwc2-skip-redundant-racing-wait_for_mode-on-role-switch-platforms.patch \
     file://0043-dwc2-skip-clear_force_mode-debounce-on-role-switch-platforms.patch \
     file://0044-dwc2-use-fixed-FIFO-parameters-on-the-Ingenic-X1600-family.patch \
+    file://0046-dwc2-bring-host-mode-up-after-a-single-IDDIG-debounce-on-role-switch-platforms.patch \
 "
 
 # Clock and power management. 0033 is a prerequisite for cpufreq on this SoC.
