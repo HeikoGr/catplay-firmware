@@ -50,32 +50,53 @@ patches 0039 and 0043 key on):
    the PHY selection differs from what is programmed - PHYIF16 survives
    the reset, so it does not.
 
-History of this patch, because the first version is what proved the
-timing theory: v1 only skipped the reset in dwc2_conn_id_status_change()
-and did no reset at all. Bench: port powered 100.3ms after the force.
-Car, three role switches in one boot: the head unit pulled up D+ 32-36ms
-after port power every time, was reset and enabled at high speed, got
-"new high-speed USB device number 2 using dwc2" - and then enumeration
-went nowhere. No descriptor, no error, the head unit dropped the port
-3.7s later. The mode switch without a core reset leaves the transfer
-side in a state the databook does not define, and that is what the
-mainline reset is for. v2 keeps the reset and only moves it.
+History of this patch, because each version taught something:
+
+v1 only skipped the reset in dwc2_conn_id_status_change() and did no
+reset at all. Bench: port powered 100.3ms after the force. Car, three
+role switches in one boot: the head unit pulled up D+ 32-36ms after
+port power every time, was reset and enabled at high speed, got "new
+high-speed USB device number 2 using dwc2" - and then enumeration went
+nowhere. No descriptor, no error, the head unit dropped the port 3.7s
+later. A mode switch without a core reset leaves the transfer side in a
+state the databook does not define; that is what the mainline reset is
+for.
+
+v2 moved the reset to dwc2_drd_role_sw_set() as described above. Bench:
+identical timing to v1. Car: the head unit never attached again, same
+as before the patch. Same time to port power as v1, the only difference
+being the ~100ms the core spends in device mode right after the reset.
+And that window is not idle: DCTL's reset value is "connected", which
+is why dwc2_gadget_init() sets SftDiscon straight after the probe-time
+reset. So v2 presented a pull-up again within microseconds of dropping
+it, for ~100ms, and the head unit - still a host - saw disconnect,
+reconnect, disconnect where it expects one disconnect before it swaps
+roles. The stock flow does the same thing 100ms later. v1 never reset,
+never re-presented, and is the only variant that got the head unit on
+the bus.
+
+v3 keeps v2 and sets SftDiscon before the force-mode write (one clean
+disconnect at a moment we choose) and again right after the reset (so
+the debounce window has no pull-up). DCTL is logged after the reset.
 
 Expected on this hardware: "Init: Port Power applied" ~100ms after
 force_mode(host), preceded by "role switch: core reset folded into
-force-mode debounce" and "connId A: host mode after ~100 ms", and then
-- the part v1 never got to - "usb 1-1: New USB device found".
+force-mode debounce ... DCTL=00000002" and "connId A: host mode after
+~100 ms", then "Port Connect Detected" within tens of ms as in v1, and
+then - the part v1 never got to - "usb 1-1: New USB device found".
 
 Written against the letux-6.18.y tree at a3d00c045d89 with 0021, 0022,
-0030, 0039, 0043 and 0044 applied. v2 not yet compiled or run.
+0030, 0039, 0043 and 0044 applied. v2 bench-verified 2026-09-15 (port
+powered 100.4ms after the force, B path back to device mode intact,
+interrupts counting). v3 not yet compiled or run.
 ---
- drivers/usb/dwc2/drd.c | 54 +++++++++++++++++++++++++++++++++++++++++++++++++-
- drivers/usb/dwc2/hcd.c | 66 ++++++++++++++++++++++++++++++++++++++++++++++++--------
- 2 files changed, 111 insertions(+), 9 deletions(-)
+ drivers/usb/dwc2/drd.c | 69 +++++++++++++++++++++++++++++++++++++++++++++++++++-
+ drivers/usb/dwc2/hcd.c | 69 ++++++++++++++++++++++++++++++++++++++++++++++++--------
+ 2 files changed, 129 insertions(+), 9 deletions(-)
 
 --- a/drivers/usb/dwc2/drd.c
 +++ b/drivers/usb/dwc2/drd.c
-@@ -83,6 +83,59 @@
+@@ -83,6 +83,75 @@
  	return 0;
  }
  
@@ -117,6 +138,8 @@ Written against the letux-6.18.y tree at a3d00c045d89 with 0021, 0022,
 +	 */
 +	spin_lock_irqsave(&hsotg->lock, flags);
 +	dwc2_hsotg_disconnect(hsotg);
++	/* One clean disconnect for the head unit, at a moment we choose. */
++	dwc2_hsotg_core_disconnect(hsotg);
 +	spin_unlock_irqrestore(&hsotg->lock, flags);
 +
 +	ret = dwc2_core_reset(hsotg, true);
@@ -124,10 +147,24 @@ Written against the letux-6.18.y tree at a3d00c045d89 with 0021, 0022,
 +		dev_err(hsotg->dev,
 +			"role switch: early core reset failed: %d\n", ret);
 +
++	/*
++	 * For one debounce period after the reset the core sits in device
++	 * mode with DCTL at its reset value, and that value is "connected":
++	 * dwc2_gadget_init() has to set SftDiscon right after the probe-time
++	 * reset for exactly that reason ("Be in disconnected state until
++	 * gadget is registered"). Left alone, the core re-presents a pull-up
++	 * for ~100ms right after we dropped it - and the head unit, still a
++	 * host at this point, sees disconnect / reconnect / disconnect where
++	 * it expects a single disconnect before it swaps roles itself. Car
++	 * captures: the head unit attaches as a device only in the one
++	 * variant of this patch that did not reset the core at all.
++	 */
++	dwc2_hsotg_core_disconnect(hsotg);
++
 +	dev_info(hsotg->dev,
-+		 "role switch: core reset folded into force-mode debounce, GOTGCTL=%08x GUSBCFG=%08x GINTSTS=%08x\n",
++		 "role switch: core reset folded into force-mode debounce, GOTGCTL=%08x GUSBCFG=%08x GINTSTS=%08x DCTL=%08x\n",
 +		 dwc2_readl(hsotg, GOTGCTL), dwc2_readl(hsotg, GUSBCFG),
-+		 dwc2_readl(hsotg, GINTSTS));
++		 dwc2_readl(hsotg, GINTSTS), dwc2_readl(hsotg, DCTL));
 +
 +	queue_work(hsotg->wq_otg, &hsotg->wf_otg);
 +}
@@ -135,7 +172,7 @@ Written against the letux-6.18.y tree at a3d00c045d89 with 0021, 0022,
  static int dwc2_drd_role_sw_set(struct usb_role_switch *sw, enum usb_role role)
  {
  	struct dwc2_hsotg *hsotg = usb_role_switch_get_drvdata(sw);
-@@ -187,10 +240,15 @@
+@@ -187,10 +256,15 @@
  
  	spin_unlock_irqrestore(&hsotg->lock, flags);
  
@@ -154,7 +191,13 @@ Written against the letux-6.18.y tree at a3d00c045d89 with 0021, 0022,
  
 --- a/drivers/usb/dwc2/hcd.c
 +++ b/drivers/usb/dwc2/hcd.c
-@@ -3156,6 +3156,26 @@
+@@ -3151,11 +3151,32 @@
+ 	u32 count = 0;
+ 	u32 gotgctl;
+ 	unsigned long flags;
++	ktime_t start;
+ 
+ 	gotgctl = dwc2_readl(hsotg, GOTGCTL);
  	dev_info(hsotg->dev, "%s(): GOTGCTL=%08x conidsts=%d\n", __func__,
  		 gotgctl, !!(gotgctl & GOTGCTL_CONID_B));
  
@@ -181,7 +224,7 @@ Written against the letux-6.18.y tree at a3d00c045d89 with 0021, 0022,
  	/* B-Device connector (Device Mode) */
  	if (gotgctl & GOTGCTL_CONID_B) {
  		dwc2_vbus_supply_exit(hsotg);
-@@ -3209,25 +3229,58 @@
+@@ -3209,25 +3230,60 @@
  		/* A-Device connector (Host Mode) */
  		dev_info(hsotg->dev, "connId A (GOTGCTL=%08x)\n",
  			 dwc2_readl(hsotg, GOTGCTL));
@@ -192,6 +235,7 @@ Written against the letux-6.18.y tree at a3d00c045d89 with 0021, 0022,
 +		 * millisecond here is a millisecond the head unit sits as a
 +		 * device without a host. Same ~5s budget as before.
 +		 */
++		start = ktime_get();
  		while (!dwc2_is_host_mode(hsotg)) {
 -			dev_info(hsotg->dev, "Waiting for Host Mode, Mode=%s\n",
 -				 dwc2_is_host_mode(hsotg) ?
@@ -208,7 +252,8 @@ Written against the letux-6.18.y tree at a3d00c045d89 with 0021, 0022,
  				"Connection id status change timed out\n");
 +		else if (count)
 +			dev_info(hsotg->dev,
-+				 "connId A: host mode after ~%u ms\n", count);
++				 "connId A: host mode after %lld ms (%u polls)\n",
++				 ktime_ms_delta(ktime_get(), start), count);
  
  		spin_lock_irqsave(&hsotg->lock, flags);
  		dwc2_hsotg_disconnect(hsotg);
