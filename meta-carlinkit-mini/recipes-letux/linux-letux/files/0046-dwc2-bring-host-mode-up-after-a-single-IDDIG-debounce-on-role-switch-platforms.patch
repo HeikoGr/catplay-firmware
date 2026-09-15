@@ -2,8 +2,8 @@ Subject: [PATCH] dwc2: bring host mode up after a single IDDIG debounce on role-
 Upstream-Status: Pending
 
 An accessory-initiated role switch on the Carlinkit Mini Ultra (Ingenic
-X1600, DWC2 core 3.00a, IDDIG filter present and no bypass) currently
-costs two debounce periods before the root hub port is powered:
+X1600, DWC2 core 3.00a, IDDIG filter present and no bypass) costs two
+debounce periods before the root hub port is powered:
 
   [1.006232] force_mode(host): GUSBCFG 4000140f -> 2000140f
   [1.106381] dwc2_conn_id_status_change(): GOTGCTL=0024007c    <- +100ms, core is host
@@ -12,57 +12,206 @@ costs two debounce periods before the root hub port is powered:
   [1.207129] Init: Port Power applied, HPRT0=00001000
 
 The first period is the hardware filter reacting to the force-mode
-write; nothing to be done about that on this core. The second one is
-self-inflicted: dwc2_conn_id_status_change() calls dwc2_core_init(false),
-which soft-resets the core, and as dwc2_core_reset() documents, a soft
-reset puts the core back into device mode until the filter has run once
-more. dwc2_core_reset() then waits for that, so host init is delayed by
-another 100ms.
+write. The second is dwc2_conn_id_status_change() calling
+dwc2_core_init(false), which soft-resets the core, and as
+dwc2_core_reset() documents, a soft reset puts the core back into device
+mode until the filter has run once more.
 
 Whether a head unit tolerates that decides catplay-firmware issue #1. A
-Continental NAC Wave 2 (Toyota Proace Verso) does not: with the vendor
+Continental NAC Wave 2 (Toyota Proace Verso) does not. With the vendor
 firmware, which forces host mode 18ms after the role-switch request and
 has its gadget disabled 100ms after that, the head unit is enumerated
-as a device 300ms later. With this driver the port is powered ~200ms
-after the force and no device is ever seen on it - 24 HPRT0 samples over
-six seconds, CONNSTS=0 in every one, in every capture. When the dongle
-finally returns to device mode the head unit re-enumerates it at once,
-so it was back in host mode by then, retrying from the top. The
-maintainer's own reading of the issue is the same: "role switch timings
-being again on the edge of what car tolerates" and "another 100ms to
-cut in dwc2.c".
+as a device 300ms later. With the stock flow the port is powered ~200ms
+after the force and no device is ever seen on it: 24 HPRT0 samples over
+six seconds, CONNSTS=0 in every one, in every capture, and when the
+dongle returns to device mode the head unit re-enumerates it at once,
+so it had long gone back to host mode. The maintainer's reading of the
+issue is the same: "role switch timings being again on the edge of what
+car tolerates", "another 100ms to cut in dwc2.c".
 
-Cut it. On role-switch platforms (dr_mode OTG with a usb-role-switch
-property, the same condition patches 0039 and 0043 key on) the host path
-of dwc2_conn_id_status_change() now calls dwc2_core_init(hsotg, true),
-i.e. without the soft reset. What host mode needs is rewritten
-regardless: dwc2_core_init() reprograms GAHBCFG, GUSBCFG and GINTMSK,
-dwc2_hcd_start() -> dwc2_core_host_init() reprograms and flushes the
-FIFOs, halts all host channels and installs the host interrupt mask.
-Device-mode endpoint state is inert once CURMODE reads host, the B path
-of the same function still resets on the way back to device mode (which
-is also where dwc2_clear_fifo_map() matters), and the GOTGCTL session
-overrides that carry this platform's sessions survive a reset anyway,
-so skipping it changes nothing about them. initial_setup=true also
-passes select_phy=true to dwc2_phy_init(), and dwc2_hs_phy_init() only
-writes GUSBCFG (and only then resets) if the PHY selection differs from
-what is already programmed - it does not.
+Cut it by folding the two debounce periods into one. On role-switch
+platforms (dr_mode OTG with a usb-role-switch property, the condition
+patches 0039 and 0043 key on):
 
-Expected result on this hardware: "Init: Port Power applied" ~100ms
-after force_mode(host) instead of ~200ms, and no "wait_for_mode(host)"
-pair in between. With the 20ms settle time g_iphone now keeps between
-the head unit's ACK and the force, the whole sequence lands where the
-vendor firmware's does.
+ * dwc2_drd_role_sw_set() soft-resets the core itself, right after the
+   force-mode write, with skip_wait so it does not block. The debounce
+   period the reset restarts is then the one the force-mode write costs
+   anyway. Force-mode bits and GOTGCTL session overrides survive the
+   reset. Since the reset also clears GAHBCFG.GLBL_INTR_EN and GINTMSK,
+   no Connector ID Status Change interrupt will follow; the handler is
+   queued directly instead.
 
-Not compiled, not run: written against the letux-6.18.y tree at
-a3d00c045d89 with 0021, 0022, 0030, 0039, 0043 and 0044 applied.
+ * dwc2_conn_id_status_change() decides A/B on the GUSBCFG force bits
+   rather than the filtered connector ID, which still reads B when the
+   work runs; polls for host mode at 1-2ms instead of 20ms; and then
+   calls dwc2_core_init(hsotg, true), i.e. without a second reset.
+   initial_setup=true also passes select_phy=true to dwc2_phy_init(),
+   and dwc2_hs_phy_init() only writes GUSBCFG (and only then resets) if
+   the PHY selection differs from what is programmed - PHYIF16 survives
+   the reset, so it does not.
+
+History of this patch, because the first version is what proved the
+timing theory: v1 only skipped the reset in dwc2_conn_id_status_change()
+and did no reset at all. Bench: port powered 100.3ms after the force.
+Car, three role switches in one boot: the head unit pulled up D+ 32-36ms
+after port power every time, was reset and enabled at high speed, got
+"new high-speed USB device number 2 using dwc2" - and then enumeration
+went nowhere. No descriptor, no error, the head unit dropped the port
+3.7s later. The mode switch without a core reset leaves the transfer
+side in a state the databook does not define, and that is what the
+mainline reset is for. v2 keeps the reset and only moves it.
+
+Expected on this hardware: "Init: Port Power applied" ~100ms after
+force_mode(host), preceded by "role switch: core reset folded into
+force-mode debounce" and "connId A: host mode after ~100 ms", and then
+- the part v1 never got to - "usb 1-1: New USB device found".
+
+Written against the letux-6.18.y tree at a3d00c045d89 with 0021, 0022,
+0030, 0039, 0043 and 0044 applied. v2 not yet compiled or run.
 ---
- drivers/usb/dwc2/hcd.c | 46 ++++++++++++++++++++++++++++++++++++++++++++--
- 1 file changed, 45 insertions(+), 1 deletion(-)
+ drivers/usb/dwc2/drd.c | 54 +++++++++++++++++++++++++++++++++++++++++++++++++-
+ drivers/usb/dwc2/hcd.c | 66 ++++++++++++++++++++++++++++++++++++++++++++++++--------
+ 2 files changed, 111 insertions(+), 9 deletions(-)
 
+--- a/drivers/usb/dwc2/drd.c
++++ b/drivers/usb/dwc2/drd.c
+@@ -83,6 +83,59 @@
+ 	return 0;
+ }
+ 
++/*
++ * Device -> host on a role-switch platform, stock flow:
++ *
++ *   force-mode write ... IDDIG debounce (100ms) ... ConIDStsChng IRQ
++ *   -> dwc2_conn_id_status_change() -> dwc2_core_init(false)
++ *   -> core soft reset -> core drops back to device mode
++ *   ... IDDIG debounce (100ms) again ... -> dwc2_hcd_start()
++ *
++ * Two debounce periods before the root hub port is powered, and only the
++ * second one is a real requirement: mainline resets the core on every mode
++ * change so host init starts from a known state, and the filter restarts on
++ * every reset. Fold them: reset the core right here, immediately after the
++ * force-mode write, so the debounce period the reset restarts is the one
++ * the force-mode write costs anyway. The force-mode bits and the GOTGCTL
++ * session overrides survive a soft reset (see dwc2_core_reset() and
++ * dwc2_ovr_avalid()), so nothing about the requested mode is lost.
++ *
++ * The reset also clears GAHBCFG.GLBL_INTR_EN and GINTMSK, so no Connector
++ * ID Status Change interrupt is going to announce the mode change. Queue
++ * the handler ourselves: it polls for host mode, skips its own reset on
++ * this platform and brings the HCD up - ~100ms after the force-mode write
++ * instead of ~200ms.
++ *
++ * Only ever called with role == USB_ROLE_HOST, dr_mode == OTG and the HCD
++ * initialised (wq_otg exists).
++ */
++static void dwc2_drd_early_host_reset(struct dwc2_hsotg *hsotg)
++{
++	unsigned long flags;
++	int ret;
++
++	/*
++	 * dwc2_conn_id_status_change() would do this ~100ms from now. The
++	 * gadget side may as well learn about the disconnect before the
++	 * reset wipes the controller state under it.
++	 */
++	spin_lock_irqsave(&hsotg->lock, flags);
++	dwc2_hsotg_disconnect(hsotg);
++	spin_unlock_irqrestore(&hsotg->lock, flags);
++
++	ret = dwc2_core_reset(hsotg, true);
++	if (ret)
++		dev_err(hsotg->dev,
++			"role switch: early core reset failed: %d\n", ret);
++
++	dev_info(hsotg->dev,
++		 "role switch: core reset folded into force-mode debounce, GOTGCTL=%08x GUSBCFG=%08x GINTSTS=%08x\n",
++		 dwc2_readl(hsotg, GOTGCTL), dwc2_readl(hsotg, GUSBCFG),
++		 dwc2_readl(hsotg, GINTSTS));
++
++	queue_work(hsotg->wq_otg, &hsotg->wf_otg);
++}
++
+ static int dwc2_drd_role_sw_set(struct usb_role_switch *sw, enum usb_role role)
+ {
+ 	struct dwc2_hsotg *hsotg = usb_role_switch_get_drvdata(sw);
+@@ -187,10 +240,15 @@
+ 
+ 	spin_unlock_irqrestore(&hsotg->lock, flags);
+ 
+-	if (!already && hsotg->dr_mode == USB_DR_MODE_OTG)
++	if (!already && hsotg->dr_mode == USB_DR_MODE_OTG) {
+ 		/* This will raise a Connector ID Status Change Interrupt */
+ 		dwc2_force_mode(hsotg, role == USB_ROLE_HOST);
+ 
++		/* ...except that for host we do not wait for it, see above. */
++		if (role == USB_ROLE_HOST && hsotg->wq_otg)
++			dwc2_drd_early_host_reset(hsotg);
++	}
++
+ 	if (!hsotg->ll_hw_enabled && hsotg->clk)
+ 		clk_disable_unprepare(hsotg->clk);
+ 
 --- a/drivers/usb/dwc2/hcd.c
 +++ b/drivers/usb/dwc2/hcd.c
-@@ -3226,8 +3226,52 @@
+@@ -3156,6 +3156,26 @@
+ 	dev_info(hsotg->dev, "%s(): GOTGCTL=%08x conidsts=%d\n", __func__,
+ 		 gotgctl, !!(gotgctl & GOTGCTL_CONID_B));
+ 
++	/*
++	 * On role-switch platforms the mode is dictated by the GUSBCFG force
++	 * bits, and the connector ID in GOTGCTL merely follows them - one
++	 * IDDIG debounce period later, and from device mode all over again
++	 * after every core soft reset. dwc2_drd_role_sw_set() queues this
++	 * work right after forcing host mode and resetting the core, i.e.
++	 * while the filtered ID still reads B. Decide on the force bits, so
++	 * the A path below gets to wait for host mode instead of the B path
++	 * happily re-initialising device mode.
++	 */
++	if (hsotg->dr_mode == USB_DR_MODE_OTG &&
++	    device_property_read_bool(hsotg->dev, "usb-role-switch")) {
++		u32 gusbcfg = dwc2_readl(hsotg, GUSBCFG);
++
++		if (gusbcfg & GUSBCFG_FORCEHOSTMODE)
++			gotgctl &= ~GOTGCTL_CONID_B;
++		else if (gusbcfg & GUSBCFG_FORCEDEVMODE)
++			gotgctl |= GOTGCTL_CONID_B;
++	}
++
+ 	/* B-Device connector (Device Mode) */
+ 	if (gotgctl & GOTGCTL_CONID_B) {
+ 		dwc2_vbus_supply_exit(hsotg);
+@@ -3209,25 +3229,58 @@
+ 		/* A-Device connector (Host Mode) */
+ 		dev_info(hsotg->dev, "connId A (GOTGCTL=%08x)\n",
+ 			 dwc2_readl(hsotg, GOTGCTL));
++		/*
++		 * Poll at 1-2ms rather than 20ms: on role-switch platforms
++		 * this is the wait for the IDDIG debounce period restarted by
++		 * the early reset in dwc2_drd_role_sw_set(), and every
++		 * millisecond here is a millisecond the head unit sits as a
++		 * device without a host. Same ~5s budget as before.
++		 */
+ 		while (!dwc2_is_host_mode(hsotg)) {
+-			dev_info(hsotg->dev, "Waiting for Host Mode, Mode=%s\n",
+-				 dwc2_is_host_mode(hsotg) ?
+-				 "Host" : "Peripheral");
+-			msleep(20);
+-			if (++count > 250)
++			usleep_range(1000, 2000);
++			if (++count > 2500)
+ 				break;
+ 		}
+-		if (count > 250)
++		if (count > 2500)
+ 			dev_err(hsotg->dev,
+ 				"Connection id status change timed out\n");
++		else if (count)
++			dev_info(hsotg->dev,
++				 "connId A: host mode after ~%u ms\n", count);
+ 
+ 		spin_lock_irqsave(&hsotg->lock, flags);
+ 		dwc2_hsotg_disconnect(hsotg);
  		spin_unlock_irqrestore(&hsotg->lock, flags);
  
  		hsotg->op_state = OTG_STATE_A_HOST;
@@ -72,44 +221,26 @@ a3d00c045d89 with 0021, 0022, 0030, 0039, 0043 and 0044 applied.
 +		/*
 +		 * Initialize the Core for Host mode.
 +		 *
-+		 * On role-switch platforms (dr_mode OTG, no external ID pin,
-+		 * mode changes come from GUSBCFG force bits written by
-+		 * dwc2_drd_role_sw_set()) we are here because that write
-+		 * raised the Connector ID Status Change interrupt - after
-+		 * one IDDIG debounce period (100ms on cores older than
-+		 * 3.10a, which have no filter bypass). The core is already
-+		 * in host mode, see the loop above.
++		 * dwc2_core_init(hsotg, false) soft-resets the core, and per
++		 * dwc2_core_reset() a soft reset drops the core back into
++		 * device mode until the IDDIG debounce filter has run once
++		 * more - 100ms on cores older than 3.10a, which have no
++		 * filter bypass. On role-switch platforms that reset has
++		 * already been done by dwc2_drd_role_sw_set(), right after
++		 * the force-mode write, so that its debounce period and the
++		 * one the force-mode write costs anyway are the same period.
++		 * Resetting again here would pay it twice, which is exactly
++		 * the ~100ms a NAC Wave 2 does not wait for.
 +		 *
-+		 * dwc2_core_init(hsotg, false) would now soft-reset the core.
-+		 * Per dwc2_core_reset() a soft reset drops the core back into
-+		 * device mode until the debounce filter has run once more, so
-+		 * host bring-up ends up paying that 100ms twice, and a head
-+		 * unit that swapped roles on our ACK sits as a device with
-+		 * nobody driving a bus reset for the whole time. On a NAC
-+		 * Wave 2 that is the difference between the vendor firmware
-+		 * (port powered ~100ms after forcing host mode, head unit
-+		 * enumerated) and this driver (~200ms, head unit gone).
-+		 *
-+		 * Skip the reset there. Everything host mode depends on is
-+		 * rewritten regardless: dwc2_core_init() reprograms GAHBCFG,
-+		 * GUSBCFG and GINTMSK from scratch, dwc2_hcd_start() ->
-+		 * dwc2_core_host_init() reprograms and flushes the FIFOs,
-+		 * halts every host channel and re-enables the host interrupt
-+		 * set. Device-mode endpoint state is dead once CURMODE is
-+		 * host, and the B path of this function still resets on the
-+		 * way back to device mode, which also clears the FIFO map.
-+		 * The GOTGCTL session overrides survive the reset anyway, so
-+		 * nothing about the override-driven session changes either.
-+		 *
-+		 * initial_setup=true is exactly "do not reset, (re)select the
-+		 * PHY": dwc2_hs_phy_init() only touches GUSBCFG if the PHY
-+		 * selection differs from what is programmed, which it never
-+		 * does at this point.
++		 * initial_setup=true is "do not reset, (re)select the PHY":
++		 * dwc2_hs_phy_init() only touches GUSBCFG (and only then
++		 * resets) if the PHY selection differs from what is already
++		 * programmed, which it never does at this point.
 +		 */
 +		if (hsotg->dr_mode == USB_DR_MODE_OTG &&
 +		    device_property_read_bool(hsotg->dev, "usb-role-switch")) {
 +			dev_info(hsotg->dev,
-+				 "connId A: role-switch platform, host init without core reset\n");
++				 "connId A: role-switch platform, host init without second core reset\n");
 +			dwc2_core_init(hsotg, true);
 +		} else {
 +			dwc2_core_init(hsotg, false);
