@@ -1,0 +1,105 @@
+Subject: [PATCH] usb: hub: skip the connect debounce on the OTG root port
+Upstream-Status: Pending
+
+First car capture with kernel patch 0046 v3 on a NAC Wave 2, two role
+switches in one boot. The second one is the first complete accessory
+handshake this hardware has done with CatPlay:
+
+  [10.838596] force_mode(host)
+  [10.940082] _dwc2_hcd_start: after hcd_reinit HPRT0=00021401 (PWR=1)  <- +101ms, head unit already pulled up
+  [10.940131] Port Connect Detected
+  [11.112518] Port Enable Changed (now 1)                               <- reset released, +172ms
+  [11.185283] usb 1-1: new high-speed USB device number 2 using dwc2
+  [11.211305] usb 1-1: New USB device found, idVendor=15a2, idProduct=1234
+  [11.211384] usb 1-1: Manufacturer: Continental
+  [11.260506] iPhone: role-switch accessory probe succeeded for if=usb0
+
+The first one got the head unit on the bus just the same, but lost it
+before the reset was ever asserted:
+
+  [ 1.528982] _dwc2_hcd_start: after hcd_reinit HPRT0=00021401 (PWR=1)
+  [ 1.529066] Port Connect Detected
+  [ 1.784007] hprt0 sample 2/24: HPRT0=00021000 [PWR ]                 <- gone, no reset in between
+
+So once the head unit has swapped roles it sits as a device waiting for
+a bus reset and gives up somewhere between ~200ms and ~250ms after
+pulling up. Of the 172ms the successful attempt took from connect to
+reset release, 50ms is the reset itself (dwc2_hcd_hub_control()) and
+~120ms is the hub thread doing nothing in hub_port_connect():
+hub_port_debounce_be_stable() waits for 100ms of stable connection in
+25ms steps before it lets enumeration begin. Under boot load, as in the
+first attempt, that plus scheduling latency is longer than the head
+unit waits.
+
+That debounce exists for mechanical contacts. Here the connection is
+protocol-controlled: the peer switched roles at our request and pulled
+up D+ on a cable that was carrying traffic a moment earlier. Patch 0032
+already skips the hub_activate() debounce on this port for the same
+reason; this skips the per-connect one too, using the same
+hub_is_b_host_otg_port() test (which, with 0032's TODO, is true for
+every root port - there is exactly one on this SoC). The port status is
+re-read once so a device that vanished in the meantime is still seen,
+and hub_port_init() handles a disconnect during reset as before.
+
+Expected effect: reset asserted within a few ms of "Port Connect
+Detected", "New USB device found" ~150ms after it instead of ~270ms,
+and the first attempt after boot succeeding as well.
+
+Written against the letux-6.18.y tree at a3d00c045d89 with 0032
+applied. Not yet compiled or run.
+---
+ drivers/usb/core/hub.c | 41 ++++++++++++++++++++++++++++++++---------
+ 1 file changed, 32 insertions(+), 9 deletions(-)
+
+--- a/drivers/usb/core/hub.c
++++ b/drivers/usb/core/hub.c
+@@ -5427,16 +5427,40 @@
+ 
+ 	if (portchange & (USB_PORT_STAT_C_CONNECTION |
+ 				USB_PORT_STAT_C_ENABLE)) {
+-		status = hub_port_debounce_be_stable(hub, port1);
+-		if (status < 0) {
+-			if (status != -ENODEV &&
+-				port1 != unreliable_port &&
+-				printk_ratelimit())
+-				dev_err(&port_dev->dev, "connect-debounce failed\n");
+-			portstatus &= ~USB_PORT_STAT_CONNECTION;
+-			unreliable_port = port1;
++		if (hub_is_b_host_otg_port(hdev, port1)) {
++			/*
++			 * Protocol-controlled connection on the OTG root port:
++			 * the peer switched roles on our request and pulled up
++			 * D+ on the same cable that was stable a moment ago.
++			 * There is no contact bounce to wait out, and the peer
++			 * is now a device waiting for a bus reset with a short
++			 * fuse. Take the current status and move on; a real
++			 * disconnect is caught by hub_port_init() anyway.
++			 */
++			u16 pc;
++
++			usb_clear_port_feature(hub->hdev, port1,
++					       USB_PORT_FEAT_C_CONNECTION);
++			status = usb_hub_port_status(hub, port1, &portstatus,
++						     &pc);
++			if (status < 0)
++				portstatus &= ~USB_PORT_STAT_CONNECTION;
++			else
++				dev_info(&port_dev->dev,
++					 "OTG root port: connect debounce skipped, status %04x\n",
++					 portstatus);
+ 		} else {
+-			portstatus = status;
++			status = hub_port_debounce_be_stable(hub, port1);
++			if (status < 0) {
++				if (status != -ENODEV &&
++					port1 != unreliable_port &&
++					printk_ratelimit())
++					dev_err(&port_dev->dev, "connect-debounce failed\n");
++				portstatus &= ~USB_PORT_STAT_CONNECTION;
++				unreliable_port = port1;
++			} else {
++				portstatus = status;
++			}
+ 		}
+ 	}
+ 

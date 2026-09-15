@@ -88,7 +88,14 @@ then - the part v1 never got to - "usb 1-1: New USB device found".
 Written against the letux-6.18.y tree at a3d00c045d89 with 0021, 0022,
 0030, 0039, 0043 and 0044 applied. v2 bench-verified 2026-09-15 (port
 powered 100.4ms after the force, B path back to device mode intact,
-interrupts counting). v3 not yet compiled or run.
+interrupts counting). v3 car-verified 2026-09-15 on the NAC Wave 2:
+DCTL=00000002 after the reset, head unit already pulled up when the
+port is powered at +101ms, and on the second role switch of the boot
+the full handshake - "New USB device found, idVendor=15a2 ...
+Manufacturer: Continental", "role-switch accessory probe succeeded",
+CarPlay icon on the head unit. The first switch of that boot lost the
+head unit before the port reset; that is the hub-side connect debounce,
+see patch 0047.
 ---
  drivers/usb/dwc2/drd.c | 69 +++++++++++++++++++++++++++++++++++++++++++++++++++-
  drivers/usb/dwc2/hcd.c | 69 ++++++++++++++++++++++++++++++++++++++++++++++++--------
