@@ -12,4 +12,10 @@ EXTRA_OEMAKE += "-C ${STAGING_KERNEL_DIR} M=${S} KCFLAGS=-O2"
 
 FILESEXTRAPATHS:prepend := "${THISDIR}/src:"
 
+# Applied inside ${S}. Meant for catplay-labs/catplay; carried here until it
+# lands there.
+SRC_URI:append = " \
+    file://0001-g_iphone-role-switch-only-after-the-host-took-our-ACK-and-recover-after-a-failed-switch.patch \
+"
+
 S = "${UNPACKDIR}/usb/catplay_iap2_usb_host/g_iphone"
