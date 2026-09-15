@@ -52,16 +52,25 @@ What it covers:
    hub has been activated, decoding PWR/CONNSTS/CONNDET/ENA/SUSP/OVRCURR
    plus line state and speed.
 
+ * phy-ingenic-usb.c - what the PHY was actually told on every role switch:
+   USBRDT before/after with IDDIG_EN/IDDIG_REG decoded, plus USBPCR and
+   USBPCR1 (USB_MODE, the VBUS/session overrides, the D+/D- pulldowns).
+   Since 0019 the role is selected purely through the IDDIG override and
+   USBPCR is never written again, so this is the only way to see whether the
+   PHY and the controller agree about the current role - CONFIG_DEVMEM is
+   off in this config, so these registers cannot be read from userspace.
+
 Diagnostics only - no behavioural change.
 
 ---
- drivers/usb/dwc2/core.c     |  40 ++++++++++++++++++++++++++++++++++------
- drivers/usb/dwc2/core.h     |   5 +++++
- drivers/usb/dwc2/drd.c      |  30 ++++++++++++++++++++++++++++++
- drivers/usb/dwc2/gadget.c   |   9 +++++++--
- drivers/usb/dwc2/hcd.c      | 101 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++------------
- drivers/usb/dwc2/hcd_intr.c |   8 ++++----
- 6 files changed, 169 insertions(+), 24 deletions(-)
+ drivers/usb/dwc2/core.c               |  40 ++++++++++++++++++++++++++++++++++------
+ drivers/usb/dwc2/core.h               |   5 +++++
+ drivers/usb/dwc2/drd.c                |  30 ++++++++++++++++++++++++++++++
+ drivers/usb/dwc2/gadget.c             |   9 +++++++--
+ drivers/usb/dwc2/hcd.c                | 101 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++------------
+ drivers/usb/dwc2/hcd_intr.c           |   8 ++++----
+ drivers/phy/ingenic/phy-ingenic-usb.c |  34 +++++++++++++++++++++++++++++++++-
+ 7 files changed, 202 insertions(+), 25 deletions(-)
 
 --- a/drivers/usb/dwc2/core.c
 +++ b/drivers/usb/dwc2/core.c
@@ -469,5 +478,61 @@ Diagnostics only - no behavioural change.
  			 "  --Port Interrupt HPRT0=0x%08x Port Overcurrent Changed--\n",
  			 hprt0);
  		hsotg->flags.b.port_over_current_change = 1;
+--- a/drivers/phy/ingenic/phy-ingenic-usb.c
++++ b/drivers/phy/ingenic/phy-ingenic-usb.c
+@@ -211,13 +211,24 @@
+ 	return 0;
+ }
+ 
++static const char *ingenic_usb_phy_mode_name(enum phy_mode mode)
++{
++	switch (mode) {
++	case PHY_MODE_USB_HOST:		return "host";
++	case PHY_MODE_USB_DEVICE:	return "device";
++	case PHY_MODE_USB_OTG:		return "otg";
++	default:			return "?";
++	}
++}
++
+ static int ingenic_usb_phy_set_mode(struct phy *phy,
+ 				    enum phy_mode mode, int submode)
+ {
+ 	struct ingenic_usb_phy *priv = phy_get_drvdata(phy);
+-	u32 rdt;
++	u32 rdt, rdt_old, pcr, pcr1;
+ 
+ 	rdt = readl(priv->base + REG_USBRDT_OFFSET);
++	rdt_old = rdt;
+ 
+ 	switch (mode) {
+ 	case PHY_MODE_USB_HOST:
+@@ -240,6 +251,27 @@
+ 
+ 	writel(rdt, priv->base + REG_USBRDT_OFFSET);
+ 
++	/*
++	 * USBPCR is deliberately no longer touched here - the role is selected
++	 * purely through the IDDIG override in USBRDT. Log it anyway, together
++	 * with USBPCR1: between them they carry USB_MODE, the VBUS/session
++	 * overrides and the D+/D- pulldowns, all of which x1600_usb_phy_init()
++	 * sets once at probe and nothing changes afterwards. If a role switch
++	 * ever fails to take effect at the PHY, this line is what says whether
++	 * the PHY agrees with the controller - and it is the only way to read
++	 * these registers at all, since CONFIG_DEVMEM is off in this config.
++	 */
++	pcr = readl(priv->base + REG_USBPCR_OFFSET);
++	pcr1 = readl(priv->base + REG_USBPCR1_OFFSET);
++
++	dev_info(&phy->dev,
++		 "set_mode(%s): USBRDT %08x -> %08x [IDDIG_EN=%d IDDIG_REG=%d] USBPCR=%08x [USB_MODE=%d VBUSVLDEXT=%d VBUSVLDEXTSEL=%d OTG_DISABLE=%d] USBPCR1=%08x [DPPD=%d DMPD=%d]\n",
++		 ingenic_usb_phy_mode_name(mode), rdt_old, rdt,
++		 !!(rdt & USBRDT_IDDIG_EN), !!(rdt & USBRDT_IDDIG_REG),
++		 pcr, !!(pcr & USBPCR_USB_MODE), !!(pcr & USBPCR_VBUSVLDEXT),
++		 !!(pcr & USBPCR_VBUSVLDEXTSEL), !!(pcr & USBPCR_OTG_DISABLE),
++		 pcr1, !!(pcr1 & USBPCR1_DPPD), !!(pcr1 & USBPCR1_DMPD));
++
+ 	return 0;
+ }
+ 
 --
 2.55.0
