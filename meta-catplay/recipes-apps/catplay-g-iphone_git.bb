@@ -16,6 +16,7 @@ FILESEXTRAPATHS:prepend := "${THISDIR}/src:"
 # CatPlay source bundle.
 SRC_URI:append = " \
     file://0001-g_iphone-answer-class-requests-our-descriptors-promise.patch \
+    file://0002-g_iphone-switch-roles-only-after-the-host-took-our-ACK.patch \
 "
 
 S = "${UNPACKDIR}/usb/catplay_iap2_usb_host/g_iphone"

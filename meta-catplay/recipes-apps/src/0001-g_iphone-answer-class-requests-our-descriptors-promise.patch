@@ -47,9 +47,9 @@ straight to `done` after f->setup() and skips `check_value`, so a function
 queues its own ep0 request and returns the usb_ep_queue() result; a
 negative return stalls. ep0_recv() follows ep0_send()/ep0_zlp() in that.
 
-NOT YET VERIFIED: this has not been compiled or run, and it was written
-against catplay-labs/catplay master. Check it applies to the bundle in
-.sources/catplay before trusting the diff.
+Written against catplay-labs/catplay master. Verified on hardware
+2026-09-15 against a NAC Wave 2: SET_CUR and SET_IDLE are accepted, the
+twelve GET_REPORT requests show up as "unhandled class request".
 
 ---
  f_iphone.c |  94 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++

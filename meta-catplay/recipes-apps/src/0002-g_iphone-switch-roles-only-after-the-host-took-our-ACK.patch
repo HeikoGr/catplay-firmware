@@ -1,0 +1,221 @@
+Subject: [PATCH] g_iphone: switch roles only after the host took our ACK, and come back after a failed switch
+Upstream-Status: Pending
+
+Two findings from a NAC Wave 2 (Continental, Toyota Proace Verso) capture
+with the dwc2 instrumentation of kernel patch 0022, catplay-firmware
+issue #1:
+
+  [1.963945] iPhone: setup bmReq=0x40 bReq=0x51 wValue=0x0001 ...
+  [1.964306] dwc2 13500000.usb: drd role_sw_set: requested role=1 phy_mode=1
+  [1.964486] iPhone: status -> disabled
+  [2.165839] dwc2 13500000.usb: hprt0 sample 1/24: HPRT0=00001000 [PWR ] lnsts=0
+  ...
+  [8.048451] dwc2 13500000.usb: hprt0 sample 24/24: HPRT0=00001000 [PWR ] lnsts=0
+  [7.136484] iPhone: role-switch accessory probe failed: -19
+  [9.184436] iPhone: rebinding gadget after role-switch failure debounce
+  [9.184470] iPhone: status -> initial
+  (nothing further on USB, ever)
+
+1. We drop the device role 360us after the 0x51 SETUP packet.
+
+   0x51 has no data stage; the head unit learns that we accepted it only
+   when it collects the zero-length status packet. f_iphone_setup() set
+   the RoleSwitch status - which schedules the host transition - before
+   even queueing that ZLP, and the work ran 360us later. The vendor
+   firmware forces host mode 18ms after the same request:
+
+     [3.328934] f_audio_setup crtl_request : bRequestType:0x40 bRequest:0x51
+     [3.346795] ---Forced switching Host mode!
+     [3.647644] usb usb1-port1: hub_port_connect:4838 portchange=0 portstatus=257
+     [3.797855] usb 1-1: new high-speed USB device number 2 using dwc2
+
+   and its head unit shows up as a device 300ms later. Ours never does:
+   CONNSTS stays 0 for the full six seconds our port is powered, so the
+   head unit either never got our ACK or gave up on the transfer when the
+   bus dropped underneath it.
+
+   Whether that is really what happens is not proven, so this patch makes
+   it measurable as well as fixing it: the RoleSwitch transition is moved
+   into the completion callback of the status-stage ZLP, and the callback
+   logs how long the host took to collect it and whether it succeeded:
+
+     iPhone: role switch acknowledged by host after <N>us
+
+   A capture without that line, or with a negative status in it, says the
+   ACK never made it out. On top of that the 20ms settle time the original
+   author had in role_switch_work (commented out, was 70ms) is restored,
+   which puts our sequence in the same place as the vendor's.
+
+2. After a failed switch the dongle stays in host mode for good.
+
+   role_switch_work goes to host with manage_gadget_lifecycle=false, so the
+   composite driver stays registered. The rebind work then calls
+   iphone_dev_bind_gadget(), which returned early on driver_registered
+   before ever setting the role back to device. Result: the controller
+   keeps its port powered in host mode, the head unit sees nothing on the
+   bus, and neither side can retry until the dongle is unplugged. Every
+   capture we have ends this way.
+
+   The role is now set to device before the driver_registered check. For
+   every other caller that is a cached no-op. This also gives the next
+   capture a discriminator: if the head unit re-enumerates us the moment
+   we are back in device mode, it never left host mode itself.
+
+Written against catplay-labs/catplay master with 0001 applied. Compiled
+and run on hardware: not yet.
+---
+ f_iphone.c   | 62 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++--
+ iphone_dev.c | 22 +++++++++++++++++-----
+ 2 files changed, 77 insertions(+), 7 deletions(-)
+
+--- a/f_iphone.c
++++ b/f_iphone.c
+@@ -3,6 +3,9 @@
+ #include "interfaces.h"
+ #include "hid.h"
+ 
++#include <linux/ktime.h>
++#include <linux/math64.h>
++
+ #define IPHONE_REQ_USBOOT 0x88
+ #define IPHONE_REQ_GADGET 0x99
+ 
+@@ -150,6 +153,54 @@
+ }
+ 
+ /*
++ * Role switch (vendor request 0x51) handshake.
++ *
++ * 0x51 is a two-stage control transfer: SETUP, then a status-stage IN that
++ * our zero-length packet answers. Only once the head unit has collected that
++ * ZLP does it know we agreed to swap roles. Tearing the device role down
++ * before then leaves the head unit with a control transfer that ended in a
++ * disconnect, and no reason to become a device itself.
++ *
++ * g_iphone_set_status(RoleSwitch) schedules the host transition, and on a
++ * NAC Wave 2 dmesg shows it taking effect 360us after the SETUP packet,
++ * where the vendor firmware takes 18ms. So the transition is now armed from
++ * the ZLP's completion callback, which is exactly the moment the host has
++ * acknowledged us, and the time it took is logged so a capture shows
++ * whether the ACK made it out at all.
++ *
++ * There is one composite ep0 request and one gadget, so the pending state
++ * is kept in file scope. If the host never runs the status stage and never
++ * sends another SETUP either, the callback never fires and the role switch
++ * does not happen - a head unit that does that would not have switched
++ * roles anyway.
++ */
++static struct g_iphone *role_switch_ack_gadget;
++static void (*role_switch_ack_orig_complete)(struct usb_ep *ep,
++					     struct usb_request *req);
++static u64 role_switch_ack_queued_ns;
++
++static void f_iphone_role_switch_ack_complete(struct usb_ep *ep,
++					      struct usb_request *req)
++{
++	struct g_iphone *iphone_gadget = role_switch_ack_gadget;
++	u64 dt_us = div_u64(ktime_get_ns() - role_switch_ack_queued_ns, 1000);
++
++	req->complete = role_switch_ack_orig_complete;
++	if (role_switch_ack_orig_complete)
++		role_switch_ack_orig_complete(ep, req);
++
++	if (req->status)
++		pr_warn("iPhone: role switch status stage ended with %d after %lluus - switching anyway\n",
++			req->status, dt_us);
++	else
++		pr_info("iPhone: role switch acknowledged by host after %lluus\n",
++			dt_us);
++
++	if (iphone_gadget)
++		g_iphone_set_status(iphone_gadget, RoleSwitch);
++}
++
++/*
+  * Accept a host-to-device data stage on ep0 and discard it. The direction of
+  * the transfer is taken from the SETUP packet by the UDC, so queueing a
+  * request of wLength bytes receives them and completes the status stage.
+@@ -225,14 +276,29 @@
+ 			return ep0_zlp(cdev);
+ 		}
+ 		case 0x51: /* Role Switch */
++		{
++			int ret;
++
+ 			pr_info("iPhone: Role Switch requested");
+ 			if (!cdev->req || !cdev->gadget->ep0)
+ 				return -ENODEV;
+ 
+ 			iphone_gadget->role_switch_requested = true;
+-			g_iphone_set_status(iphone_gadget, RoleSwitch);
+ 
+-			return ep0_zlp(cdev);
++			/* The status transition happens once the host has our ZLP. */
++			role_switch_ack_gadget = iphone_gadget;
++			role_switch_ack_orig_complete = cdev->req->complete;
++			role_switch_ack_queued_ns = ktime_get_ns();
++			cdev->req->complete = f_iphone_role_switch_ack_complete;
++
++			ret = ep0_zlp(cdev);
++			if (ret) {
++				cdev->req->complete = role_switch_ack_orig_complete;
++				iphone_gadget->role_switch_requested = false;
++				pr_warn("iPhone: role switch ZLP queue failed: %d\n", ret);
++			}
++			return ret;
++		}
+ 
+ 		case 0x53: /* Capabilities */
+ 		{
+--- a/iphone_dev.c
++++ b/iphone_dev.c
+@@ -13,7 +13,12 @@
+ #include "iap2_scan.h"
+ 
+ #define IPHONE_ROLE_SWITCH_REBIND_DEBOUNCE_MS 1000
+-#define IPHONE_ROLE_SWITCH_HOST_DELAY_MS 70
++/*
++ * Settle time between the head unit acknowledging 0x51 and us dropping the
++ * device role. The vendor firmware forces host mode 18ms after the request
++ * on a NAC Wave 2; this is the same order of magnitude.
++ */
++#define IPHONE_ROLE_SWITCH_HOST_DELAY_MS 20
+ #define IPHONE_RECOVERY_COMMAND "/usr/bin/carlinkit_otalib usboot"
+ #define IPHONE_RECOVERY_COMMAND_GADGET "/usr/bin/carlinkit_otalib gadget"
+ 
+@@ -156,15 +161,22 @@
+ {
+ 	int ret;
+ 
+-	if (data->driver_registered)
+-		return 0;
+-
+-	/* Before bind, always enter USB_ROLE_DEVICE */
++	/*
++	 * Before bind, always enter USB_ROLE_DEVICE. This must come before the
++	 * driver_registered check: the role-switch path goes to host without
++	 * unregistering the driver, so after a failed switch the driver is
++	 * still registered while the controller sits in host mode. Returning
++	 * early here left the dongle in host mode for good, with nothing on
++	 * the bus for the head unit to enumerate or retry against.
++	 */
+ 	ret = iphone_dev_set_otg_role_internal(data, USB_ROLE_DEVICE, false);
+ 	if (ret) {
+ 		return ret;
+ 	}
+ 
++	if (data->driver_registered)
++		return 0;
++
+ 	pr_info("iPhone: registering gadget\n");
+ 	ret = c2a_usb_composite_probe(&data->driver->drv);
+ 	if (ret) {
+@@ -437,7 +449,7 @@
+ 		data->role_switch_rebind_scheduled = false;
+ 	}
+ 
+-	// msleep(IPHONE_ROLE_SWITCH_HOST_DELAY_MS);
++	msleep(IPHONE_ROLE_SWITCH_HOST_DELAY_MS);
+ 
+ 	if (iphone_dev_set_otg_role_internal(data, USB_ROLE_HOST, false)) {
+ 	// if (iphone_dev_set_otg_role(&data->g, USB_ROLE_HOST)) {
