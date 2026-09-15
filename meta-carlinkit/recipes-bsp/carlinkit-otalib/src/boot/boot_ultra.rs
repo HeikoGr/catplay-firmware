@@ -305,21 +305,26 @@ impl BootUltra {
             }
         }
 
-        // Boots pinned to the "performance" cpufreq governor (see
-        // clk-mini-ultra-nor_defconfig) so the CPU cannot step down during
-        // the timing-critical early USB/CarPlay enumeration window - a
-        // cpufreq-triggered clock-rate change blocks for up to 100ms with
-        // IRQs disabled (see
-        // 0033-clk-ingenic-x1600-couple-cpu-and-l2-dividers.patch), which is
-        // believed to cause the intermittent USB detection failures on some
-        // head units (catplay-firmware issue #1). Switch to "ondemand" here,
-        // once that window has safely passed, so the thermal/power benefits
-        // from cpufreq still apply during normal operation.
-        if let Some(_fork_guard) = SystemUtil::fork_guard() {
-            SystemUtil::sleep(Duration::from_secs(8));
-            let _ = SystemUtil::run_shell(
-                "for p in /sys/devices/system/cpu/cpufreq/policy*; do echo ondemand > $p/scaling_governor; done",
-            );
-        }
+        // The cpufreq governor stays on "performance" (the defconfig default)
+        // for the whole session. An earlier version of this code switched to
+        // "ondemand" after 8s, on the theory that a cpufreq clock-rate change
+        // stalls with IRQs disabled for up to 100ms and could hit the early
+        // USB enumeration window. That theory has since been measured and
+        // refuted: patch 0045 shows x1600_cpu_set_rate() holds IRQs off for
+        // at most ~6us.
+        //
+        // What the 8s window did not cover at all is when the head unit
+        // actually talks to us. On a NAC Wave 2 the first vendor request
+        // arrives ~12s after boot and the role switch at ~40s, i.e. long
+        // after the switch to ondemand, with the CPU idling at 184-368MHz.
+        // Under ondemand catplay_c2a then runs up to 6x slower than at
+        // 1104MHz while answering iAP2 requests, which is the remaining
+        // cpufreq hypothesis for catplay-firmware issue #1 (v0.2.0 had no
+        // cpufreq at all and worked; v0.3.0 enabled it and did not).
+        //
+        // Keeping "performance" permanently is the A/B test for that. If it
+        // proves out, the proper fix is a frequency floor (scaling_min_freq)
+        // rather than disabling scaling outright, so the power/thermal
+        // benefit of cpufreq is kept where it does no harm.
     }
 }

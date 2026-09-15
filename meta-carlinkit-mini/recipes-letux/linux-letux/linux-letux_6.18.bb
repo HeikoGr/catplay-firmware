@@ -63,7 +63,6 @@ SRC_URI:append = " \
     file://0031-usb-core-set-USB_PORT_QUIRK_OLD_SCHEME-and-USB_PORT_QUIRK_FAST_ENUM-quirks-on-dwc2-root-hub.patch \
     file://0032-usb-hub-skip-OTG-root-hub-debounce-during-B-host-activation.patch \
     file://0039-dwc2-skip-redundant-racing-wait_for_mode-on-role-switch-platforms.patch \
-    file://0040-dwc2-recover-root-hub-activation-seeing-stale-device-mode.patch \
     file://0043-dwc2-skip-clear_force_mode-debounce-on-role-switch-platforms.patch \
     file://0044-dwc2-use-fixed-FIFO-parameters-on-the-Ingenic-X1600-family.patch \
 "
@@ -104,9 +103,16 @@ do_kernel_configcheck[noexec] = "1"
 LOCALVERSION = "-letux"
 
 # Stamp the kernel source state into the kernel banner, i.e. the
-# "Linux version 6.18.36-c2a (...) #1 PREEMPT <this string>" line at the very
-# top of dmesg. A captured log then says what it was built from, instead of
-# leaving you to guess whether a flashed image actually contains a given patch.
+# "Linux version 6.18.36-c2a (...) #k:<rev>@<date> PREEMPT ..." line at the
+# very top of dmesg. A captured log then says what it was built from, instead
+# of leaving you to guess whether a flashed image actually contains a patch.
+#
+# KBUILD_BUILD_VERSION is the "#1" build-number slot. It is used here rather
+# than KBUILD_BUILD_TIMESTAMP because kernel_do_compile() in kernel.bbclass
+# exports KBUILD_BUILD_TIMESTAMP inside the shell function at run time (from
+# SOURCE_DATE_EPOCH, for reproducible builds), which silently overrides any
+# recipe-level export - verified on hardware: the banner kept the kernel
+# commit date. The build-number slot is left alone by the class.
 #
 # This lands in UTS_VERSION, not UTS_RELEASE, so it does NOT change module
 # vermagic - out-of-tree modules (aic8800, iap2_char) keep loading.
@@ -117,7 +123,7 @@ LOCALVERSION = "-letux"
 # the kernel whenever any unrelated file in the tree changes.
 C2A_KERNEL_REV ?= "unknown"
 C2A_KERNEL_DATE ?= "unknown"
-export KBUILD_BUILD_TIMESTAMP = "${C2A_KERNEL_DATE} k:${C2A_KERNEL_REV}"
+export KBUILD_BUILD_VERSION = "k:${C2A_KERNEL_REV}@${C2A_KERNEL_DATE}"
 
 inherit kernel-clang-c2a
 inherit kernel-deploy-extras-c2a
