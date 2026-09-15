@@ -46,7 +46,10 @@ Detected", "New USB device found" ~150ms after it instead of ~270ms,
 and the first attempt after boot succeeding as well.
 
 Written against the letux-6.18.y tree at a3d00c045d89 with 0032
-applied. Not yet compiled or run.
+applied. Car-verified 2026-09-15 together with 0048: "connect debounce
+skipped, status 0101" 0.4ms after "Port Connect Detected", first role
+switch after boot succeeded, accessory probe succeeded, CarPlay shown
+and pairing possible. Remaining latency under boot load: patch 0049.
 ---
  drivers/usb/core/hub.c | 41 ++++++++++++++++++++++++++++++++---------
  1 file changed, 32 insertions(+), 9 deletions(-)

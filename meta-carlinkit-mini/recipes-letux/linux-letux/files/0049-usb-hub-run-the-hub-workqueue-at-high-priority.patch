@@ -1,0 +1,53 @@
+Subject: [PATCH] usb: hub: run the hub workqueue at high priority
+Upstream-Status: Pending
+
+First car capture with 0047 and 0048 on the NAC Wave 2 - the first
+role switch after boot succeeds now, for the first time:
+
+  [1.092189] Port Connect Detected
+  [1.092549] usb usb1-port1: OTG root port: connect debounce skipped   <- 0047/0048: 0.4ms
+  [1.255234] Port Enable Changed (now 1)                               <- reset released, +163ms
+  [1.467235] usb 1-1: new high-speed USB device number 2 using dwc2
+  [1.492881] usb 1-1: New USB device found, idVendor=15a2, idProduct=1234
+  [1.551458] iPhone: status -> accessory
+
+The hub thread was on the port 0.4ms after the connect, but still took
+113ms to assert the reset (released at +163ms, the pulse is 50ms), and
+another 212ms from reset to the first descriptor where an idle system
+takes 73ms. Everything in between is CPU contention: this happens at
+1.1s after boot, alongside the aic8800 firmware upload with its md5
+pass, RF calibration and the readahead sweep, on one core. The head
+unit waits ~200ms from its own pull-up for the reset; we were at
+~185ms. It worked, with the margin of a coin toss.
+
+Enumeration is latency-bound work of a few hundred microseconds per
+step, interleaved with waits. Run hub_wq as a WQ_HIGHPRI workqueue so
+its worker gets the CPU ahead of the bulk work whenever it is
+runnable. No behavioural change beyond scheduling priority; every USB
+host in the tree enumerates the same way, just sooner under load.
+
+Written against the letux-6.18.y tree at a3d00c045d89 with 0032 and
+0047 applied. Not yet compiled or run.
+---
+ drivers/usb/core/hub.c | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+--- a/drivers/usb/core/hub.c
++++ b/drivers/usb/core/hub.c
+@@ -6089,7 +6089,15 @@
+ 	 * device was gone before the EHCI controller had handed its port
+ 	 * over to the companion full-speed controller.
+ 	 */
+-	hub_wq = alloc_workqueue("usb_hub_wq", WQ_FREEZABLE, 0);
++	/*
++	 * WQ_HIGHPRI: on this single-core SoC the hub thread competes with
++	 * WiFi firmware upload, RF calibration and readahead right when the
++	 * head unit swaps roles and waits ~200ms for its bus reset. Measured
++	 * on a NAC Wave 2: 113ms from "Port Connect Detected" to the reset
++	 * being asserted under boot load, ~10ms when idle. Enumeration is
++	 * latency-bound, not throughput-bound; let it win the CPU.
++	 */
++	hub_wq = alloc_workqueue("usb_hub_wq", WQ_FREEZABLE | WQ_HIGHPRI, 0);
+ 	if (hub_wq)
+ 		return 0;
+ 

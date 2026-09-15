@@ -35,7 +35,9 @@ correct on every platform; here it is the difference between a race
 and a handshake.
 
 Written against the letux-6.18.y tree at a3d00c045d89 with 0022
-applied. Not yet compiled or run.
+applied. Car-verified 2026-09-15 together with 0047: hub thread on the
+port 0.4ms after the connect interrupt, first role switch after boot
+succeeded.
 ---
  drivers/usb/dwc2/hcd_intr.c | 19 ++++++++++++++++++-
  1 file changed, 18 insertions(+), 1 deletion(-)

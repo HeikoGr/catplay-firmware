@@ -68,6 +68,7 @@ SRC_URI:append = " \
     file://0046-dwc2-bring-host-mode-up-after-a-single-IDDIG-debounce-on-role-switch-platforms.patch \
     file://0047-usb-hub-skip-connect-debounce-on-the-OTG-root-port.patch \
     file://0048-dwc2-kick-the-root-hub-status-poll-on-port-interrupts.patch \
+    file://0049-usb-hub-run-the-hub-workqueue-at-high-priority.patch \
 "
 
 # Clock and power management. 0033 is a prerequisite for cpufreq on this SoC.
