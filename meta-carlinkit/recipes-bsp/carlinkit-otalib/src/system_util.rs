@@ -205,6 +205,26 @@ impl SystemUtil {
         Ok(())
     }
 
+    pub fn mount_bind(source: &str, target: &str) -> Result<(), &'static str> {
+        let c_source = Self::to_cstring::<256>(source)?;
+        let c_target = Self::to_cstring::<256>(target)?;
+        let ret = unsafe {
+            libc::mount(
+                c_source.as_ptr(),
+                c_target.as_ptr(),
+                core::ptr::null(),
+                libc::MS_BIND,
+                core::ptr::null(),
+            )
+        };
+
+        if ret == 0 {
+            Ok(())
+        } else {
+            Err("bind mount failed")
+        }
+    }
+
     fn to_cstring<const N: usize>(s: &str) -> Result<CString<N>, &'static str> {
         let mut c = CString::<N>::new();
         if c.extend_from_bytes(s.as_bytes()).is_err() {

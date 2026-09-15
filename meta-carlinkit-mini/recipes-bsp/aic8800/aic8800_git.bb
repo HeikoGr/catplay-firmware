@@ -85,6 +85,7 @@ FILES:${PN}-fw-aic8800d80 = "\
     ${nonarch_base_libdir}/firmware/aic8800_fw/SDIO/aic8800D80/fw_patch_8800d80_u02.bin \
     ${nonarch_base_libdir}/firmware/aic8800_fw/SDIO/aic8800D80/fw_patch_8800d80_u02_ext0.bin \
     ${nonarch_base_libdir}/firmware/aic8800_fw/SDIO/aic8800D80/fmacfw_8800d80_h_u02.bin \
+    ${nonarch_base_libdir}/firmware/aic8800_fw/SDIO/aic8800D80/fmacfw_8800d80_u02.bin \
 "
 FILES:${PN}-fw-aic8800d80x2 = "\
     ${nonarch_base_libdir}/firmware/aic8800_fw/SDIO/aic8800D80X2/* \

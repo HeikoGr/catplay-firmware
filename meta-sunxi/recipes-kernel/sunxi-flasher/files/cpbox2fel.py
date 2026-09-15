@@ -24,6 +24,7 @@ class Preset:
 PRESETS = {
     "carlinkit": Preset(name="carlinkit", ly="ly5190", ip="192.168.50.100"),
     "wooboobox": Preset(name="wooboobox", ly="ly5166", ip="192.168.1.101"),
+    "ekiy": Preset(name="ekiy", ly="ly5101", ip="192.168.1.101"),
 }
 CACHE_DIR = Path(__file__).resolve().parent / "cpbox-cache"
 OTA_HOST = "cpbox-abroad.oss-us-west-1.aliyuncs.com"

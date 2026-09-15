@@ -25,9 +25,9 @@ pub fn mount_persist(mtdblock_dev: &str, fs_type: &str) -> Result<(), &'static s
 }
 
 pub fn mount_persist_overlays() {
-    let _ = SystemUtil::unlink_if_exists("/var/lib/bluetooth");
     let _ = SystemUtil::mkdir_if_missing("/persist");
     let _ = SystemUtil::mkdir_if_missing("/persist/c2a_bluetooth");
     let _ = SystemUtil::mkdir_if_missing("/persist/c2a_config");
-    let _ = SystemUtil::ensure_symlink("/persist/c2a_bluetooth", "/var/lib/bluetooth");
+    let _ = SystemUtil::mkdir_if_missing("/var/lib/bluetooth");
+    let _ = SystemUtil::mount_bind("/persist/c2a_bluetooth", "/var/lib/bluetooth");
 }
