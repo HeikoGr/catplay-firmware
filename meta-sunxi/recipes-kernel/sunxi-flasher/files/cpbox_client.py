@@ -29,7 +29,7 @@ class CPBoxOtaClient:
     _MAX_UPDATE_SIZE = 512 * 1024 * 1024
     _CHUNK_SIZE = 1024 * 1024
     _LY_PATTERN = re.compile(r"ly([0-9]{4})")
-    _DECRYPT_METHOD_BY_LY = {"5166": "v821", "5190": "v821"}
+    _DECRYPT_METHOD_BY_LY = {"5101": "v821", "5166": "v821", "5190": "v821"}
     _USER_AGENT = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Version/26.0 Safari/605.1.15"
 
     class Error(RuntimeError):
@@ -647,7 +647,7 @@ class SquashfsPatcher:
             original_path.write_bytes(content)
 
             listing = self._run(
-                [self._unsquashfs, "-lln", "-full-precision", "-UTC", str(original_path)]
+                [self._unsquashfs, "-lln", "-UTC", str(original_path)]
             ).decode(errors="replace")
             metadata = [
                 line for line in listing.splitlines() if self._METADATA_LINE.match(line)
@@ -737,7 +737,6 @@ class SquashfsPatcher:
                 [
                     self._unsquashfs,
                     "-lln",
-                    "-full-precision",
                     "-UTC",
                     str(patched_path),
                     "dev/console",
@@ -1016,7 +1015,7 @@ class OtaRepacker:
     """Patch the customer filesystem in an encrypted OTA file."""
 
     _MAX_INPUT_SIZE = 512 * 1024 * 1024
-    _CUSTOMER_PARTITION_SIZE = {"ly5166": 0x3A0000, "ly5190": 0x3A0000}
+    _CUSTOMER_PARTITION_SIZE = {"ly5101": 0x3A0000, "ly5166": 0x3A0000, "ly5190": 0x3A0000}
     _REQUIRED_MEMBERS = {"sw-description", "customer", "kernel"}
 
     class Error(RuntimeError):
