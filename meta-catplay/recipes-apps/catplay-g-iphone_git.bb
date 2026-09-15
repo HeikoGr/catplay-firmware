@@ -12,4 +12,10 @@ EXTRA_OEMAKE += "-C ${STAGING_KERNEL_DIR} M=${S} KCFLAGS=-O2"
 
 FILESEXTRAPATHS:prepend := "${THISDIR}/src:"
 
+# Patches apply inside ${S}, i.e. usb/catplay_iap2_usb_host/g_iphone of the
+# CatPlay source bundle.
+SRC_URI:append = " \
+    file://0001-g_iphone-answer-class-requests-our-descriptors-promise.patch \
+"
+
 S = "${UNPACKDIR}/usb/catplay_iap2_usb_host/g_iphone"

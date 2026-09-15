@@ -1,0 +1,176 @@
+Subject: [PATCH] g_iphone: honour the class requests our own descriptors promise
+Upstream-Status: Pending
+
+f_iphone_setup() handles standard HID descriptor reads and five vendor
+requests, and stalls everything else - including every class-specific
+request. One of those we are not entitled to stall, and the rest deserve
+to at least be visible in a log.
+
+UAC1 SET_CUR(SAMPLING_FREQ_CONTROL) arrives at the isochronous IN endpoint
+as bmRequestType=0x22 bRequest=0x01 wValue=0x0100 wIndex=0x0081 wLength=3.
+interfaces.h describes that endpoint with a UAC_EP_GENERAL class descriptor
+whose bmAttributes has bit D0 set:
+
+    } __packed cs_ep1 = {
+        .header = { .bLength = 7, .bDescriptorType = USB_DT_CS_ENDPOINT },
+        .raw = { 0x01, 0x01, 0x00, 0x00, 0x00 },
+                  ^^^^  ^^^^ bmAttributes: sampling frequency control
+                  UAC_EP_GENERAL
+
+and interfaces_audio.h offers nine discrete sample rates in cs_intf5. Per
+UAC1 5.2.3.2.3.1 a host may then select one, and stalling that request
+contradicts the descriptors we just handed out. The vendor firmware accepts
+it in f_audio_setup(). SET_IDLE is added for the same reason: no data
+stage, every HID device is expected to accept it, and the vendor firmware's
+f_hid does.
+
+This is a correctness fix and nothing more. It is explicitly NOT a fix for
+catplay-firmware issue #1: an MBUX capture (catplay issue #11) pauses only
+464ms after the very same stall, while a NAC Wave 2 capture pauses 11.5s,
+so the stall cannot be what dominates either case.
+
+What both captures do have in common is a failed iAP2-over-HID handshake
+just before the head unit stops making progress - the NAC walking report
+IDs 1..12 with GET_REPORT, the MBUX pushing report 0x0f with SET_REPORT,
+all of it stalled. That is catplay issue #11, it needs a second iAP2 pipe
+running before the role switch, and it is deliberately out of scope here.
+Those requests keep being stalled; answering them with an empty report the
+way Android's f_hid does would hand the head unit a malformed iAP2 packet
+instead of an honest "not supported", which may well be worse.
+
+What changes for them is only that every refused request now says so, with
+its bmRequestType and bRequest, so a capture shows exactly what we say no
+to instead of leaving a silent gap in the log.
+
+Note on the calling convention: composite_setup() in this tree jumps
+straight to `done` after f->setup() and skips `check_value`, so a function
+queues its own ep0 request and returns the usb_ep_queue() result; a
+negative return stalls. ep0_recv() follows ep0_send()/ep0_zlp() in that.
+
+NOT YET VERIFIED: this has not been compiled or run, and it was written
+against catplay-labs/catplay master. Check it applies to the bundle in
+.sources/catplay before trusting the diff.
+
+---
+ f_iphone.c |  94 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 94 insertions(+)
+
+--- a/f_iphone.c
++++ b/f_iphone.c
+@@ -6,6 +6,14 @@
+ #define IPHONE_REQ_USBOOT 0x88
+ #define IPHONE_REQ_GADGET 0x99
+ 
++/* USB Audio Class 1.0, section 5.2.3 */
++#define IPHONE_UAC_SET_CUR 0x01
++#define IPHONE_UAC_EP_SAMPLING_FREQ_CONTROL 0x01
++
++/* HID 1.11, section 7.2 */
++#define IPHONE_HID_GET_REPORT 0x01
++#define IPHONE_HID_SET_IDLE 0x0a
++
+ static struct g_iphone *g_iphone_from_func(struct usb_function *f)
+ {
+ 	struct f_iphone *iphone_func = container_of(f, struct f_iphone, func);
+@@ -141,6 +149,23 @@
+ 	return usb_ep_queue(cdev->gadget->ep0, cdev->req, GFP_ATOMIC);
+ }
+ 
++/*
++ * Accept a host-to-device data stage on ep0 and discard it. The direction of
++ * the transfer is taken from the SETUP packet by the UDC, so queueing a
++ * request of wLength bytes receives them and completes the status stage.
++ */
++static int ep0_recv(struct usb_composite_dev *cdev, u16 wLength)
++{
++	if (!cdev || !cdev->req || !cdev->gadget || !cdev->gadget->ep0)
++		return -ENODEV;
++
++	cdev->req->length = wLength;
++	cdev->req->zero = 0;
++	pr_info("iPhone: ep0_recv <- len %u", wLength);
++
++	return usb_ep_queue(cdev->gadget->ep0, cdev->req, GFP_ATOMIC);
++}
++
+ /* ----------------- Control requests ----------------- */
+ static int f_iphone_setup(struct usb_function *f,
+ 						const struct usb_ctrlrequest *ctrl)
+@@ -243,6 +268,75 @@
+ 		}
+ 		}
+ 	}
++
++	/* Class-specific requests */
++	if ((ctrl->bRequestType & USB_TYPE_MASK) == USB_TYPE_CLASS)
++	{
++		/*
++		 * UAC1 SET_CUR(SAMPLING_FREQ_CONTROL) on the isochronous IN
++		 * endpoint. interfaces.h advertises a UAC_EP_GENERAL descriptor
++		 * with bmAttributes bit D0 set and interfaces_audio.h offers
++		 * nine discrete sample rates, so a head unit is entitled to
++		 * select one - and per UAC1 5.2.3.2.3.1 it must be able to.
++		 *
++		 * We have nothing to reconfigure, the stream is produced to
++		 * match, but the request has to be accepted rather than
++		 * stalled: stalling it contradicts our own descriptors.
++		 *
++		 * This is a correctness fix, not a known cure for anything: an
++		 * MBUX capture (catplay issue #11) shows the head unit pausing
++		 * only 464ms after the same stall, while a NAC Wave 2 capture
++		 * (catplay-firmware issue #1) pauses 11.5s. Same stall, very
++		 * different consequence - so something else dominates.
++		 */
++		if (ctrl->bRequestType == (USB_DIR_OUT | USB_TYPE_CLASS | USB_RECIP_ENDPOINT) &&
++			ctrl->bRequest == IPHONE_UAC_SET_CUR &&
++			(wValue >> 8) == IPHONE_UAC_EP_SAMPLING_FREQ_CONTROL)
++		{
++			pr_info("iPhone: audio SET_CUR sampling freq on ep 0x%02x", wIndex & 0xff);
++			return ep0_recv(cdev, wLength);
++		}
++
++		/*
++		 * HID SET_IDLE carries no data and every HID device is expected
++		 * to accept it. Acknowledge it instead of stalling.
++		 */
++		if (ctrl->bRequestType == (USB_DIR_OUT | USB_TYPE_CLASS | USB_RECIP_INTERFACE) &&
++			ctrl->bRequest == IPHONE_HID_SET_IDLE)
++		{
++			pr_info("iPhone: HID SET_IDLE (intf %u)", wIndex);
++			return ep0_zlp(cdev);
++		}
++
++		/*
++		 * Everything else stays stalled, but say so explicitly - and be
++		 * clear about what is being refused here, because it matters.
++		 *
++		 * HID GET_REPORT (0xa1/0x01) and HID SET_REPORT (0x21/0x09) are
++		 * the transport for iAP2-over-HID, which head units use before
++		 * the role switch to fetch basic metadata. A NAC Wave 2 issues
++		 * twelve GET_REPORTs walking report IDs 1..12 (lengths 6, 10,
++		 * 14, 18, 26, 50, 96, 194, 258, 386, 514, 768) and an MBUX
++		 * issues SET_REPORT with report ID 0x0f; both get stalled, and
++		 * both head units then stop making progress. See catplay issue
++		 * #11 ("MBUX doesn't role switch because of missing iAP2-over-
++		 * HID support") and catplay-firmware issue #1.
++		 *
++		 * Answering these properly means running an iAP2 pipe before the
++		 * role switch in addition to the one after it, which is well
++		 * beyond what this patch should attempt. Answering them wrongly
++		 * - an empty report, the way Android's f_hid does - would hand
++		 * the head unit a malformed iAP2 packet instead of an honest
++		 * "not supported", which may be worse. So the behaviour is left
++		 * alone deliberately and only made visible.
++		 */
++		pr_info("iPhone: unhandled class request bmReq=0x%02x bReq=0x%02x - stalling",
++				ctrl->bRequestType, ctrl->bRequest);
++		return -EOPNOTSUPP;
++	}
++
++	pr_info("iPhone: unhandled request bmReq=0x%02x bReq=0x%02x - stalling",
++			ctrl->bRequestType, ctrl->bRequest);
+ 	return -EOPNOTSUPP;
+ }
+ 
+--
+2.55.0

@@ -77,6 +77,12 @@ SRC_URI:append = " \
     file://0037-dmaengine-jz4780-gate-controller-clock-around-transf.patch \
 "
 
+# Diagnostics for the cpufreq path (depends on 0033). Same rule as 0022: drop
+# this one entry for a quiet kernel.
+SRC_URI:append = " \
+    file://0045-clk-ingenic-x1600-measure-cpu-set_rate-IRQs-off-stall.patch \
+"
+
 # PV is defined in the base in linux-imx.inc file and uses the LINUX_VERSION definition
 # required by kernel-yocto.bbclass.
 #

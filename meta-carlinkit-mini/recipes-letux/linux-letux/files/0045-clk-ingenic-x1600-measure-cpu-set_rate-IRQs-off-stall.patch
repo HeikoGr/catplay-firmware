@@ -1,0 +1,134 @@
+Subject: [PATCH] clk: ingenic: x1600: measure how long cpu set_rate holds IRQs off
+Upstream-Status: Pending
+
+Diagnostics for catplay-firmware issue #1.
+
+x1600_cpu_set_rate() (added by
+0033-clk-ingenic-x1600-couple-cpu-and-l2-dividers.patch) takes cgu->lock
+with interrupts disabled and then busy-polls CLOCKSTATUS for the divider
+change to complete, with a 100ms timeout:
+
+	spin_lock_irqsave(&cgu->lock, flags);
+	...
+	ret = readl_poll_timeout_atomic(cgu->base + CGU_REG_CLOCKSTATUS,
+					status,
+					!(status & CLOCKSTATUS_CPU_BUSY),
+					0, 100 * USEC_PER_MSEC);
+	spin_unlock_irqrestore(&cgu->lock, flags);
+
+v0.2.0 of catplay-firmware had no cpufreq at all; v0.3.0 enabled it with
+the ondemand governor (691eef1) and this hang fix (19925cf), and v0.3.0 is
+where the NAC Wave 2 head unit stopped working. On a running dongle
+cpufreq stats show ~12 transitions per second under ondemand, so the
+typical stall is clearly short - but the tail is unmeasured, and the tail
+is what matters to anything latency-bound: a head unit waiting on a USB
+control transfer response does not care about the mean.
+
+Directly measuring the role switch showed it is not affected: it takes the
+same 201ms at 184MHz and at 1104MHz, because it is two 100ms IDDIG debounce
+waits in hardware, i.e. timer-bound. That test says nothing about the
+latency-bound paths, and this kernel has no ftrace (CONFIG_FTRACE is off)
+so there is no other way to see an IRQs-off stall.
+
+So measure it here. Timestamp with local_clock() immediately after the
+lock is taken and immediately before it is released, and report:
+
+ - every new maximum, as a pr_warn with the requested rate, the stall in
+   microseconds, the transition number and the poll result. This is self-
+   limiting: it goes quiet once the worst case has been seen.
+
+ - a pr_info summary every 1024 transitions (~90s under ondemand) with the
+   count, the max and the mean.
+
+The counters are plain statics updated outside the lock. This is a UP
+system and a lost increment in the summary is harmless.
+
+Diagnostics only - no behavioural change to the clock code itself. Depends
+on patch 0033.
+
+---
+ drivers/clk/ingenic/x1600-cgu.c |  40 ++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 40 insertions(+), 0 deletions(-)
+
+--- a/drivers/clk/ingenic/x1600-cgu.c
++++ b/drivers/clk/ingenic/x1600-cgu.c
+@@ -12,8 +12,10 @@
+ #include <linux/delay.h>
+ #include <linux/io.h>
+ #include <linux/iopoll.h>
++#include <linux/math64.h>
+ #include <linux/rational.h>
+ #include <linux/of.h>
++#include <linux/sched/clock.h>
+ 
+ #include <dt-bindings/clock/ingenic,x1600-cgu.h>
+ 
+@@ -92,12 +94,30 @@
+ 	return DIV_ROUND_UP(*parent_rate, div);
+ }
+ 
++/*
++ * Diagnostics: x1600_cpu_set_rate() keeps interrupts disabled while it polls
++ * CLOCKSTATUS for the divider change to complete, for up to 100ms. cpufreq
++ * calls it around a dozen times a second under ondemand, so the typical case
++ * must be short - but the tail is what matters to anything latency-bound,
++ * such as answering a USB control transfer. Track it. Only new maxima and a
++ * periodic summary are printed, so this stays quiet once it has converged.
++ *
++ * The counters are touched outside the lock on a UP system; a lost increment
++ * in the summary count is harmless and not worth a lock.
++ */
++#define X1600_CPU_SET_RATE_SUMMARY_EVERY	1024
++
++static u64 x1600_cpu_set_rate_max_ns;
++static u64 x1600_cpu_set_rate_total_ns;
++static unsigned long x1600_cpu_set_rate_count;
++
+ static int x1600_cpu_set_rate(struct clk_hw *hw, unsigned long req_rate,
+ 			      unsigned long parent_rate)
+ {
+ 	unsigned long flags;
+ 	unsigned int cpu_div, l2_div;
+ 	u32 val, status;
++	u64 t0, stall_ns;
+ 	int ret;
+ 
+ 	cpu_div = DIV_ROUND_UP(parent_rate, req_rate);
+@@ -110,6 +130,7 @@
+ 		l2_div = min(cpu_div * 2, 16U);
+ 
+ 	spin_lock_irqsave(&cgu->lock, flags);
++	t0 = local_clock();
+ 
+ 	val = readl(cgu->base + CGU_REG_CLOCKCONTROL);
+ 	val &= ~CLOCKCONTROL_CHANGE_ENABLE;
+@@ -128,8 +149,27 @@
+ 					!(status & CLOCKSTATUS_CPU_BUSY),
+ 					0, 100 * USEC_PER_MSEC);
+ 
++	stall_ns = local_clock() - t0;
+ 	spin_unlock_irqrestore(&cgu->lock, flags);
+ 
++	x1600_cpu_set_rate_count++;
++	x1600_cpu_set_rate_total_ns += stall_ns;
++
++	if (stall_ns > x1600_cpu_set_rate_max_ns) {
++		x1600_cpu_set_rate_max_ns = stall_ns;
++		pr_warn("x1600-cgu: cpu set_rate -> %lu Hz held IRQs off for %llu us (new max, transition #%lu, ret=%d)\n",
++			req_rate, div_u64(stall_ns, NSEC_PER_USEC),
++			x1600_cpu_set_rate_count, ret);
++	}
++
++	if (!(x1600_cpu_set_rate_count % X1600_CPU_SET_RATE_SUMMARY_EVERY))
++		pr_info("x1600-cgu: cpu set_rate: %lu transitions, IRQs-off max %llu us, mean %llu us\n",
++			x1600_cpu_set_rate_count,
++			div_u64(x1600_cpu_set_rate_max_ns, NSEC_PER_USEC),
++			div_u64(div_u64(x1600_cpu_set_rate_total_ns,
++					x1600_cpu_set_rate_count),
++				NSEC_PER_USEC));
++
+ 	return ret;
+ }
+ 
+--
+2.55.0
