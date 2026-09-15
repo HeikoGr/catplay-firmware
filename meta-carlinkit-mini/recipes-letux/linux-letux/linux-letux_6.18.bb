@@ -97,20 +97,21 @@ do_kernel_configcheck[noexec] = "1"
 
 LOCALVERSION = "-letux"
 
-# Stamp the firmware tree's identity into the kernel banner, i.e. the
+# Stamp the kernel source state into the kernel banner, i.e. the
 # "Linux version 6.18.36-c2a (...) #1 PREEMPT <this string>" line at the very
 # top of dmesg. A captured log then says what it was built from, instead of
 # leaving you to guess whether a flashed image actually contains a given patch.
 #
 # This lands in UTS_VERSION, not UTS_RELEASE, so it does NOT change module
-# vermagic - out-of-tree modules (aic8800, iap2_char) keep loading. Set from
-# git describe, not the wall clock, so the value only changes when the tree
-# changes and the kernel is not rebuilt on every invocation.
+# vermagic - out-of-tree modules (aic8800, iap2_char) keep loading.
 #
-# C2A_FW_VERSION / C2A_FW_DATE are written into conf/auto.conf by build.sh.
-C2A_FW_VERSION ?= "unknown"
-C2A_FW_DATE ?= "unknown"
-export KBUILD_BUILD_TIMESTAMP = "${C2A_FW_DATE} fw:${C2A_FW_VERSION}"
+# C2A_KERNEL_REV / C2A_KERNEL_DATE are written into conf/auto.conf by build.sh
+# and describe the last commit touching kernel-relevant paths only. Because
+# this variable is a vardep of do_compile, widening that scope would rebuild
+# the kernel whenever any unrelated file in the tree changes.
+C2A_KERNEL_REV ?= "unknown"
+C2A_KERNEL_DATE ?= "unknown"
+export KBUILD_BUILD_TIMESTAMP = "${C2A_KERNEL_DATE} k:${C2A_KERNEL_REV}"
 
 inherit kernel-clang-c2a
 inherit kernel-deploy-extras-c2a
