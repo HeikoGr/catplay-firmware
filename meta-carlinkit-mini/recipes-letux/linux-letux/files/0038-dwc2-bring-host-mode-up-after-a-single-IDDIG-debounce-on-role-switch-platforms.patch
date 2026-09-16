@@ -74,11 +74,18 @@ Car (NAC Wave 2): the head unit has pulled up D+ by the time the port
 is powered, every time, and with the two follow-up patches enumerates
 as "Continental OIP" and completes the iAP2 accessory probe.
 
+dwc2_drd_early_host_reset() now bails out (and does not queue the host
+bring-up work) if dwc2_core_reset() fails, instead of only logging it.
+The caller further down relies on that reset having actually happened -
+it skips its own reset via dwc2_core_init(hsotg, true) - so continuing
+past a failed one would report the role switch as done while the core
+may still be in whatever state the failed reset left it in.
+
 ---
  drivers/usb/dwc2/core.c | 11 +++++++
- drivers/usb/dwc2/drd.c  | 60 +++++++++++++++++++++++++++++++++++++++-
+ drivers/usb/dwc2/drd.c  | 63 +++++++++++++++++++++++++++++++++++++++--
  drivers/usb/dwc2/hcd.c  | 64 ++++++++++++++++++++++++++++++++++++-------
- 3 files changed, 126 insertions(+), 9 deletions(-)
+ 3 files changed, 129 insertions(+), 9 deletions(-)
 
 --- a/drivers/usb/dwc2/core.c
 +++ b/drivers/usb/dwc2/core.c
@@ -103,7 +110,7 @@ as "Continental OIP" and completes the iAP2 accessory probe.
  }
 --- a/drivers/usb/dwc2/drd.c
 +++ b/drivers/usb/dwc2/drd.c
-@@ -83,6 +83,66 @@
+@@ -83,6 +83,69 @@
  	return 0;
  }
  
@@ -153,9 +160,12 @@ as "Continental OIP" and completes the iAP2 accessory probe.
 +	spin_unlock_irqrestore(&hsotg->lock, flags);
 +
 +	ret = dwc2_core_reset(hsotg, true);
-+	if (ret)
++	if (ret) {
 +		dev_err(hsotg->dev,
-+			"role switch: early core reset failed: %d\n", ret);
++			"role switch: early core reset failed: %d, aborting role switch\n",
++			ret);
++		return;
++	}
 +
 +	dwc2_hsotg_core_disconnect(hsotg);
 +
@@ -170,7 +180,7 @@ as "Continental OIP" and completes the iAP2 accessory probe.
  static int dwc2_drd_role_sw_set(struct usb_role_switch *sw, enum usb_role role)
  {
  	struct dwc2_hsotg *hsotg = usb_role_switch_get_drvdata(sw);
-@@ -181,10 +241,15 @@
+@@ -181,10 +244,15 @@
  
  	spin_unlock_irqrestore(&hsotg->lock, flags);
  

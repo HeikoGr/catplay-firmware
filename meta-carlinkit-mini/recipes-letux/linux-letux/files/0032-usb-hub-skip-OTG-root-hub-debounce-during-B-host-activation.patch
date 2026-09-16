@@ -1,35 +1,53 @@
 Subject: [PATCH] usb: hub: skip OTG root-hub debounce during B-host activation
 Upstream-Status: Pending
 
+hub_is_b_host_otg_port() had fallen back to "|| true" because
+bus->is_b_host does not read true during activation on this platform,
+which matched every hub port rather than only the root hub's OTG port.
+That was harmless while this function had a single caller during B-host
+activation, but 0040-usb-hub-skip-connect-debounce-on-the-OTG-root-port.
+patch added a second caller on the accessory role-switch path, and the
+same over-broad match there skips the connect debounce on ordinary
+downstream hubs and devices too. Fixed by keying purely on port identity
+(root hub + the HCD's registered OTG port) instead of the unreliable
+is_b_host bit.
 
 ---
- drivers/usb/core/hub.c | 14 +++++++++++++-
- 1 file changed, 13 insertions(+), 1 deletion(-)
+ drivers/usb/core/hub.c | 20 +++++++++++++++++++-
+ 1 file changed, 19 insertions(+), 1 deletion(-)
 
 diff --git a/drivers/usb/core/hub.c b/drivers/usb/core/hub.c
 index 256fe8c86..c28990d28 100644
 --- a/drivers/usb/core/hub.c
 +++ b/drivers/usb/core/hub.c
-@@ -1080,6 +1080,17 @@ enum hub_activation_type {
+@@ -1080,6 +1080,25 @@ enum hub_activation_type {
  static void hub_init_func2(struct work_struct *ws);
  static void hub_init_func3(struct work_struct *ws);
- 
+
 +/*
 + * During HNP the OTG port on the root hub is a protocol-controlled soft
 + * connection. Skip the normal 100-ms connect debounce for that port while
 + * activating the hub as a B-host.
++ *
++ * bus->is_b_host does not reliably reflect B-host activation on this
++ * platform (it reads back as A-host instead), so this keys purely on port
++ * identity: the root hub's designated OTG port. Both this function's
++ * callers - this one and the accessory role-switch one in
++ * 0040-usb-hub-skip-connect-debounce-on-the-OTG-root-port.patch - depend
++ * on that scope; an earlier "|| true" fallback here matched every hub
++ * port instead, skipping the connect debounce on ordinary downstream
++ * hubs and devices too.
 + */
 +static bool hub_is_b_host_otg_port(struct usb_device *hdev, int port1)
 +{
-+	return (!hdev->parent && hdev->bus->is_b_host &&
-+	       hdev->bus->otg_port == port1) || true; // TODO: this was supposed to detect OTG mode, but OTG is currently visible as A-HOST instead...
++	return !hdev->parent && hdev->bus->otg_port == port1;
 +}
 +
  static void hub_activate(struct usb_hub *hub, enum hub_activation_type type)
  {
  	struct usb_device *hdev = hub->hdev;
-@@ -1234,7 +1245,8 @@ static void hub_activate(struct usb_hub *hub, enum hub_activation_type type)
- 
+@@ -1234,7 +1253,8 @@ static void hub_activate(struct usb_hub *hub, enum hub_activation_type type)
+
  		/* Clear status-change flags; we'll debounce later */
  		if (portchange & USB_PORT_STAT_C_CONNECTION) {
 -			need_debounce_delay = true;
