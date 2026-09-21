@@ -21,7 +21,7 @@ impl Udhcpd {
                 interface: "wlan0",
                 start: "192.168.50.100",
                 end: "192.168.50.200",
-                subnet: "255.255.0.0",
+                subnet: "255.255.255.0",
                 instance: "wifi",
                 // The CarPlay AP: keep leases across reboots so the returning iPhone is ACK-ed
                 // straight away. Flushed every minute; the file is a few dozen bytes.
@@ -31,7 +31,7 @@ impl Udhcpd {
                 interface: iface,
                 start: "192.168.51.100",
                 end: "192.168.51.200",
-                subnet: "255.255.0.0",
+                subnet: "255.255.255.0",
                 instance: "recov",
                 lease_store: UdhcpdLeaseStore::Volatile,
             },
@@ -39,7 +39,7 @@ impl Udhcpd {
                 interface: "p2p0",
                 start: "192.168.52.100",
                 end: "192.168.52.200",
-                subnet: "255.255.0.0",
+                subnet: "255.255.255.0",
                 instance: "p2p",
                 lease_store: UdhcpdLeaseStore::Volatile,
             },

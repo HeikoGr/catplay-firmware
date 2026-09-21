@@ -61,7 +61,7 @@ fn format_udhcpd() {
         interface: "wlan0",
         start: "192.168.50.100",
         end: "192.168.50.200",
-        subnet: "255.255.0.0",
+        subnet: "255.255.255.0",
         instance: "wifi",
         lease_store: UdhcpdLeaseStore::Volatile,
     })
@@ -73,7 +73,7 @@ fn format_udhcpd() {
 end\t\t192.168.50.200\n\
 interface\twlan0\n\
 lease_file\t/var/lib/udhcpd.wifi.leases\n\
-option\tsubnet\t255.255.0.0\n\
+option\tsubnet\t255.255.255.0\n\
 option\tlease\t864000 # 10 days\n"
     );
 }
@@ -84,7 +84,7 @@ fn format_udhcpd_persistent() {
         interface: "wlan0",
         start: "192.168.50.100",
         end: "192.168.50.200",
-        subnet: "255.255.0.0",
+        subnet: "255.255.255.0",
         instance: "wifi",
         lease_store: UdhcpdLeaseStore::Persistent { flush_interval_secs: 60 },
     })
@@ -97,7 +97,7 @@ end\t\t192.168.50.200\n\
 interface\twlan0\n\
 lease_file\t/persist/c2a_dhcp/udhcpd.wifi.leases\n\
 auto_time\t60\n\
-option\tsubnet\t255.255.0.0\n\
+option\tsubnet\t255.255.255.0\n\
 option\tlease\t864000 # 10 days\n"
     );
 }
