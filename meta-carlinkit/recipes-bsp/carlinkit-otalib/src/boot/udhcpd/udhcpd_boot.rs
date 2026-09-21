@@ -2,7 +2,7 @@ use heapless::format;
 
 use crate::{
     SystemUtil,
-    boot::udhcpd::{UdhcpdConfigParams, format_udhcpd_config},
+    boot::udhcpd::{UdhcpdConfigParams, UdhcpdLeaseStore, format_udhcpd_config},
     nostd::SmallFd,
 };
 
@@ -23,6 +23,9 @@ impl Udhcpd {
                 end: "192.168.50.200",
                 subnet: "255.255.0.0",
                 instance: "wifi",
+                // The CarPlay AP: keep leases across reboots so the returning iPhone is ACK-ed
+                // straight away. Flushed every minute; the file is a few dozen bytes.
+                lease_store: UdhcpdLeaseStore::Persistent { flush_interval_secs: 60 },
             },
             UdhcpdMode::Recovery(iface) => UdhcpdConfigParams {
                 interface: iface,
@@ -30,6 +33,7 @@ impl Udhcpd {
                 end: "192.168.51.200",
                 subnet: "255.255.0.0",
                 instance: "recov",
+                lease_store: UdhcpdLeaseStore::Volatile,
             },
             UdhcpdMode::P2P => UdhcpdConfigParams {
                 interface: "p2p0",
@@ -37,6 +41,7 @@ impl Udhcpd {
                 end: "192.168.52.200",
                 subnet: "255.255.0.0",
                 instance: "p2p",
+                lease_store: UdhcpdLeaseStore::Volatile,
             },
         };
         let cfg = format_udhcpd_config(&params).map_err(|_| "failed to format udhcpd config")?;
